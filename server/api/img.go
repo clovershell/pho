@@ -14,16 +14,30 @@ import (
 type api struct {
 	im                *imgmanager.ImgManager
 	httpPort          int
-	baiduLogginInChan chan *pb.StartBaiduNetdiskLoginResponse
+	startTime         time.Time
 
 	pb.UnimplementedImgSyncerServer
 }
 
 func NewApi(im *imgmanager.ImgManager) *api {
 	a := &api{
-		im: im,
+		im:        im,
+		startTime: time.Now(),
 	}
 	return a
+}
+
+func (a *api) Ping(ctx context.Context, req *pb.PingRequest) (*pb.PingResponse, error) {
+	return &pb.PingResponse{
+		ServerStartTime: a.startTime.Unix(),
+		UptimeSeconds:   int64(time.Since(a.startTime).Seconds()),
+	}, nil
+}
+
+func (a *api) SetDirectoryType(ctx context.Context, req *pb.SetDirectoryTypeRequest) (rsp *pb.SetDirectoryTypeResponse, err error) {
+	rsp = &pb.SetDirectoryTypeResponse{Success: true}
+	a.im.SetDirectoryType(req.DirectoryType)
+	return
 }
 
 func (a *api) ListByDate(ctx context.Context, req *pb.ListByDateRequest) (rsp *pb.ListByDateResponse, err error) {
@@ -43,15 +57,19 @@ func (a *api) ListByDate(ctx context.Context, req *pb.ListByDateRequest) (rsp *p
 			return
 		}
 	}
-	rsp.Paths = make([]string, 0, req.MaxReturn)
+	rsp.Infos = make([]*pb.FileInfo, 0, req.MaxReturn)
 	offset := req.Offset
 	needReturn := req.MaxReturn
-	e = a.im.RangeByDate(start, func(path string, size int64) bool {
+	e = a.im.RangeByDate(start, func(info imgmanager.ImgInfo) bool {
 		if offset > 0 {
 			offset--
 			return true
 		}
-		rsp.Paths = append(rsp.Paths, path)
+		rsp.Infos = append(rsp.Infos, &pb.FileInfo{
+			Path:        info.Path,
+			Size:        info.Size,
+			IsLivePhoto: info.IsLivePhoto,
+		})
 		needReturn--
 		return needReturn > 0
 	})
@@ -64,17 +82,24 @@ func (a *api) ListByDate(ctx context.Context, req *pb.ListByDateRequest) (rsp *p
 
 func (a *api) Delete(ctx context.Context, req *pb.DeleteRequest) (rsp *pb.DeleteResponse, err error) {
 	rsp = &pb.DeleteResponse{Success: true}
+	for i, p := range req.Paths {
+		cleaned, err := sanitizePath(p)
+		if err != nil {
+			rsp.Success = false
+			rsp.Message = fmt.Sprintf("invalid path at index %d: %s", i, err.Error())
+			return rsp, nil
+		}
+		req.Paths[i] = cleaned
+	}
 	a.im.DeleteImg(req.Paths)
 	return
 }
 
 func (a *api) FilterNotUploaded(stream pb.ImgSyncer_FilterNotUploadedServer) error {
-	all := make(map[string]bool)
-	a.im.RangeByDate(time.Now(), func(path string, size int64) bool {
-		name := filepath.Base(path)
-		all[name] = true
-		return true
-	})
+	nameToID := make(map[string]string)
+	targetIDs := make(map[string]bool)
+	invalidIDs := make([]string, 0)
+
 	for {
 		r, err := stream.Recv()
 		if err != nil {
@@ -83,25 +108,60 @@ func (a *api) FilterNotUploaded(stream pb.ImgSyncer_FilterNotUploadedServer) err
 			}
 			return err
 		}
-		rsp := &pb.FilterNotUploadedResponse{Success: true, IsFinished: r.IsFinished}
-		rsp.NotUploaedIDs = make([]string, 0, len(r.Photos))
 		for _, info := range r.Photos {
 			t, err := time.Parse("2006:01:02 15:04:05", info.Date)
 			if err != nil {
+				invalidIDs = append(invalidIDs, info.Id)
 				continue
 			}
-			if !all[encodeName(t, info.Name)] {
-				rsp.NotUploaedIDs = append(rsp.NotUploaedIDs, info.Id)
-			}
+			encoded := encodeName(t, info.Name)
+			nameToID[encoded] = info.Id
+			nameToID[encoded+".aes"] = info.Id
+			targetIDs[info.Id] = true
 		}
-		if err := stream.Send(rsp); err != nil {
-			return err
-		}
-		if rsp.IsFinished {
+		if r.IsFinished {
 			break
 		}
 	}
-	return nil
+
+	if len(targetIDs) == 0 {
+		return stream.Send(&pb.FilterNotUploadedResponse{
+			Success:    true,
+			IsFinished: true,
+			InvalidIds: invalidIDs,
+		})
+	}
+
+	uploadedIDs := make([]string, 0)
+	unmatchedCount := len(targetIDs)
+
+	a.im.RangeByDate(time.Now(), func(info imgmanager.ImgInfo) bool {
+		name := filepath.Base(info.Path)
+		if id, ok := nameToID[name]; ok {
+			if targetIDs[id] {
+				targetIDs[id] = false
+				unmatchedCount--
+				uploadedIDs = append(uploadedIDs, id)
+			}
+		}
+		return unmatchedCount > 0
+	})
+
+	notUploadedIDs := make([]string, 0, unmatchedCount)
+	for id, unmatched := range targetIDs {
+		if unmatched {
+			notUploadedIDs = append(notUploadedIDs, id)
+		}
+	}
+
+	return stream.Send(&pb.FilterNotUploadedResponse{
+		Success:        true,
+		IsFinished:     true,
+		NotUploaedIDs:  notUploadedIDs,
+		NotUploadedIDs: notUploadedIDs,
+		UploadedIDs:    uploadedIDs,
+		InvalidIds:     invalidIDs,
+	})
 }
 
 // func (a *api) FilterNotUploaded(ctx context.Context, req *pb.FilterNotUploadedRequest) (rsp *pb.FilterNotUploadedResponse, err error) {
@@ -128,12 +188,3 @@ func (a *api) FilterNotUploaded(stream pb.ImgSyncer_FilterNotUploadedServer) err
 // 	}
 // 	return
 // }
-
-func isVideo(name string) bool {
-	ext := filepath.Ext(name)
-	switch ext {
-	case ".mp4", ".avi", ".rmvb", ".rm", ".flv", ".wmv", ".mkv", ".mov", ".mpg", ".mpeg", ".3gp", ".3g2", ".asf", ".asx", ".vob", ".m2ts", ".mts", ".ts":
-		return true
-	}
-	return false
-}

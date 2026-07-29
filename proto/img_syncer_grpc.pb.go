@@ -18,6 +18,7 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ImgSyncerClient interface {
+	SetDirectoryType(ctx context.Context, in *SetDirectoryTypeRequest, opts ...grpc.CallOption) (*SetDirectoryTypeResponse, error)
 	ListByDate(ctx context.Context, in *ListByDateRequest, opts ...grpc.CallOption) (*ListByDateResponse, error)
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	FilterNotUploaded(ctx context.Context, opts ...grpc.CallOption) (ImgSyncer_FilterNotUploadedClient, error)
@@ -32,8 +33,8 @@ type ImgSyncerClient interface {
 	// NFS Drive
 	SetDriveNFS(ctx context.Context, in *SetDriveNFSRequest, opts ...grpc.CallOption) (*SetDriveNFSResponse, error)
 	ListDriveNFSDir(ctx context.Context, in *ListDriveNFSDirRequest, opts ...grpc.CallOption) (*ListDriveNFSDirResponse, error)
-	SetDriveBaiduNetDisk(ctx context.Context, in *SetDriveBaiduNetDiskRequest, opts ...grpc.CallOption) (*SetDriveBaiduNetDiskResponse, error)
-	StartBaiduNetdiskLogin(ctx context.Context, in *StartBaiduNetdiskLoginRequest, opts ...grpc.CallOption) (*StartBaiduNetdiskLoginResponse, error)
+	// Ping
+	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
 }
 
 type imgSyncerClient struct {
@@ -42,6 +43,15 @@ type imgSyncerClient struct {
 
 func NewImgSyncerClient(cc grpc.ClientConnInterface) ImgSyncerClient {
 	return &imgSyncerClient{cc}
+}
+
+func (c *imgSyncerClient) SetDirectoryType(ctx context.Context, in *SetDirectoryTypeRequest, opts ...grpc.CallOption) (*SetDirectoryTypeResponse, error) {
+	out := new(SetDirectoryTypeResponse)
+	err := c.cc.Invoke(ctx, "/img_syncer.ImgSyncer/SetDirectoryType", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *imgSyncerClient) ListByDate(ctx context.Context, in *ListByDateRequest, opts ...grpc.CallOption) (*ListByDateResponse, error) {
@@ -165,18 +175,9 @@ func (c *imgSyncerClient) ListDriveNFSDir(ctx context.Context, in *ListDriveNFSD
 	return out, nil
 }
 
-func (c *imgSyncerClient) SetDriveBaiduNetDisk(ctx context.Context, in *SetDriveBaiduNetDiskRequest, opts ...grpc.CallOption) (*SetDriveBaiduNetDiskResponse, error) {
-	out := new(SetDriveBaiduNetDiskResponse)
-	err := c.cc.Invoke(ctx, "/img_syncer.ImgSyncer/SetDriveBaiduNetDisk", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *imgSyncerClient) StartBaiduNetdiskLogin(ctx context.Context, in *StartBaiduNetdiskLoginRequest, opts ...grpc.CallOption) (*StartBaiduNetdiskLoginResponse, error) {
-	out := new(StartBaiduNetdiskLoginResponse)
-	err := c.cc.Invoke(ctx, "/img_syncer.ImgSyncer/StartBaiduNetdiskLogin", in, out, opts...)
+func (c *imgSyncerClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error) {
+	out := new(PingResponse)
+	err := c.cc.Invoke(ctx, "/img_syncer.ImgSyncer/Ping", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -187,6 +188,7 @@ func (c *imgSyncerClient) StartBaiduNetdiskLogin(ctx context.Context, in *StartB
 // All implementations must embed UnimplementedImgSyncerServer
 // for forward compatibility
 type ImgSyncerServer interface {
+	SetDirectoryType(context.Context, *SetDirectoryTypeRequest) (*SetDirectoryTypeResponse, error)
 	ListByDate(context.Context, *ListByDateRequest) (*ListByDateResponse, error)
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	FilterNotUploaded(ImgSyncer_FilterNotUploadedServer) error
@@ -201,8 +203,8 @@ type ImgSyncerServer interface {
 	// NFS Drive
 	SetDriveNFS(context.Context, *SetDriveNFSRequest) (*SetDriveNFSResponse, error)
 	ListDriveNFSDir(context.Context, *ListDriveNFSDirRequest) (*ListDriveNFSDirResponse, error)
-	SetDriveBaiduNetDisk(context.Context, *SetDriveBaiduNetDiskRequest) (*SetDriveBaiduNetDiskResponse, error)
-	StartBaiduNetdiskLogin(context.Context, *StartBaiduNetdiskLoginRequest) (*StartBaiduNetdiskLoginResponse, error)
+	// Ping
+	Ping(context.Context, *PingRequest) (*PingResponse, error)
 	mustEmbedUnimplementedImgSyncerServer()
 }
 
@@ -210,6 +212,9 @@ type ImgSyncerServer interface {
 type UnimplementedImgSyncerServer struct {
 }
 
+func (UnimplementedImgSyncerServer) SetDirectoryType(context.Context, *SetDirectoryTypeRequest) (*SetDirectoryTypeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetDirectoryType not implemented")
+}
 func (UnimplementedImgSyncerServer) ListByDate(context.Context, *ListByDateRequest) (*ListByDateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListByDate not implemented")
 }
@@ -243,11 +248,8 @@ func (UnimplementedImgSyncerServer) SetDriveNFS(context.Context, *SetDriveNFSReq
 func (UnimplementedImgSyncerServer) ListDriveNFSDir(context.Context, *ListDriveNFSDirRequest) (*ListDriveNFSDirResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListDriveNFSDir not implemented")
 }
-func (UnimplementedImgSyncerServer) SetDriveBaiduNetDisk(context.Context, *SetDriveBaiduNetDiskRequest) (*SetDriveBaiduNetDiskResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SetDriveBaiduNetDisk not implemented")
-}
-func (UnimplementedImgSyncerServer) StartBaiduNetdiskLogin(context.Context, *StartBaiduNetdiskLoginRequest) (*StartBaiduNetdiskLoginResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method StartBaiduNetdiskLogin not implemented")
+func (UnimplementedImgSyncerServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Ping not implemented")
 }
 func (UnimplementedImgSyncerServer) mustEmbedUnimplementedImgSyncerServer() {}
 
@@ -260,6 +262,24 @@ type UnsafeImgSyncerServer interface {
 
 func RegisterImgSyncerServer(s grpc.ServiceRegistrar, srv ImgSyncerServer) {
 	s.RegisterService(&ImgSyncer_ServiceDesc, srv)
+}
+
+func _ImgSyncer_SetDirectoryType_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDirectoryTypeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ImgSyncerServer).SetDirectoryType(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/img_syncer.ImgSyncer/SetDirectoryType",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ImgSyncerServer).SetDirectoryType(ctx, req.(*SetDirectoryTypeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _ImgSyncer_ListByDate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -468,38 +488,20 @@ func _ImgSyncer_ListDriveNFSDir_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ImgSyncer_SetDriveBaiduNetDisk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetDriveBaiduNetDiskRequest)
+func _ImgSyncer_Ping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PingRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ImgSyncerServer).SetDriveBaiduNetDisk(ctx, in)
+		return srv.(ImgSyncerServer).Ping(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/img_syncer.ImgSyncer/SetDriveBaiduNetDisk",
+		FullMethod: "/img_syncer.ImgSyncer/Ping",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ImgSyncerServer).SetDriveBaiduNetDisk(ctx, req.(*SetDriveBaiduNetDiskRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _ImgSyncer_StartBaiduNetdiskLogin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(StartBaiduNetdiskLoginRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ImgSyncerServer).StartBaiduNetdiskLogin(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/img_syncer.ImgSyncer/StartBaiduNetdiskLogin",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ImgSyncerServer).StartBaiduNetdiskLogin(ctx, req.(*StartBaiduNetdiskLoginRequest))
+		return srv.(ImgSyncerServer).Ping(ctx, req.(*PingRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -511,6 +513,10 @@ var ImgSyncer_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "img_syncer.ImgSyncer",
 	HandlerType: (*ImgSyncerServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "SetDirectoryType",
+			Handler:    _ImgSyncer_SetDirectoryType_Handler,
+		},
 		{
 			MethodName: "ListByDate",
 			Handler:    _ImgSyncer_ListByDate_Handler,
@@ -552,12 +558,8 @@ var ImgSyncer_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ImgSyncer_ListDriveNFSDir_Handler,
 		},
 		{
-			MethodName: "SetDriveBaiduNetDisk",
-			Handler:    _ImgSyncer_SetDriveBaiduNetDisk_Handler,
-		},
-		{
-			MethodName: "StartBaiduNetdiskLogin",
-			Handler:    _ImgSyncer_StartBaiduNetdiskLogin_Handler,
+			MethodName: "Ping",
+			Handler:    _ImgSyncer_Ping_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

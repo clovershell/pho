@@ -1,10 +1,13 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:img_syncer/design_tokens.dart';
+import 'package:img_syncer/event_bus.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'state_model.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/global.dart';
+import 'package:img_syncer/widgets/thumbnail_skeleton.dart';
 import 'package:flutter/services.dart';
 
 class ChooseAlbumRoute extends StatefulWidget {
@@ -51,12 +54,17 @@ class ChooseAlbumRouteState extends State<ChooseAlbumRoute> {
   }
 
   Future<Uint8List?> getFirstPhotoThumbnail(AssetPathEntity path) async {
-    final List<AssetEntity> entities =
-        await path.getAssetListPaged(page: 0, size: 1);
-    if (entities.isNotEmpty) {
-      final entity = entities[0];
-      final data = await entity.thumbnailData;
-      return data!;
+    try {
+      final List<AssetEntity> entities =
+          await path.getAssetListPaged(page: 0, size: 1);
+      if (entities.isNotEmpty) {
+        final entity = entities[0];
+        final data = await entity
+            .thumbnailDataWithSize(const ThumbnailSize.square(400), quality: 90);
+        return data;
+      }
+    } catch (e) {
+      print("[ChooseAlbum] getFirstPhotoThumbnail 失败: $e");
     }
     return null;
   }
@@ -90,10 +98,10 @@ class ChooseAlbumRouteState extends State<ChooseAlbumRoute> {
           primary: false,
           slivers: <Widget>[
             SliverPadding(
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.all(AppSpacing.sm),
               sliver: SliverGrid.count(
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
+                crossAxisSpacing: AppSpacing.sm,
+                mainAxisSpacing: AppSpacing.sm,
                 crossAxisCount: 2,
                 childAspectRatio: 0.75,
                 children: children,
@@ -116,45 +124,41 @@ class AlbumCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      shape: RoundedRectangleBorder(
-        side: BorderSide(
-          width: 1.5,
-          color: Theme.of(context).primaryColor.withOpacity(0.5),
-        ),
-        borderRadius: const BorderRadius.all(Radius.circular(15)),
-      ),
       clipBehavior: Clip.antiAlias,
-      // elevation: Theme.of(context).cardTheme.elevation,
-      color: Theme.of(context).cardColor,
       child: LayoutBuilder(
         builder: (context, constraints) {
           return Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
+              Container(
                   width: constraints.maxWidth,
                   height: constraints.maxHeight - 80,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(AppRadius.extraSmall),
+                  ),
+                  clipBehavior: Clip.antiAlias,
                   child: thumbnail != null
                       ? Image.memory(thumbnail!, fit: BoxFit.cover)
-                      : Image.asset("assets/images/gray.jpg")),
+                      : ThumbnailSkeleton()),
               Container(
                   alignment: Alignment.centerLeft,
                   height: 40,
                   child: Row(
                     children: [
                       Container(
-                        padding: const EdgeInsets.fromLTRB(10, 0, 0, 0),
-                        child: Text(path.name,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontFamily: 'Ubuntu-condensed',
-                            )),
+                        padding: const EdgeInsets.only(left: AppSpacing.sm),
+                        child: Text(
+                            path.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyLarge),
                       ),
                     ],
                   )),
               Container(
                 alignment: Alignment.centerRight,
-                padding: const EdgeInsets.fromLTRB(0, 0, 0, 0),
                 height: 40,
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.end,
@@ -162,28 +166,39 @@ class AlbumCard extends StatelessWidget {
                     Expanded(
                       child: Container(
                         alignment: Alignment.centerLeft,
-                        padding: const EdgeInsets.fromLTRB(10, 0, 0, 0),
+                        padding: const EdgeInsets.only(left: AppSpacing.sm),
                         child: FutureBuilder(
                           future: path.assetCountAsync,
-                          builder: (context, snapshot) => Text(
-                              snapshot.hasData
-                                  ? "${snapshot.data} ${l10n.pics}"
-                                  : 'unknown count pics',
-                              style: Theme.of(context).textTheme.bodySmall),
+                          builder: (context, snapshot) => Badge(
+                            label: Text("${snapshot.data ?? 0}"),
+                            backgroundColor: Theme.of(context)
+                                .colorScheme
+                                .primary
+                                .withAlpha(128),
+                            textStyle: Theme.of(context).textTheme.bodySmall,
+                          ),
                         ),
                       ),
                     ),
                     Container(
                       alignment: Alignment.centerRight,
                       width: 120,
-                      padding: const EdgeInsets.fromLTRB(5, 5, 5, 5),
+                      padding: const EdgeInsets.fromLTRB(0, AppSpacing.xs, AppSpacing.xs, AppSpacing.xs),
                       child: FilledButton(
-                        style: Theme.of(context).textButtonTheme.style,
+                        style: FilledButton.styleFrom(
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: AppSpacing.md,
+                              vertical: AppSpacing.xs),
+                        ),
                         onPressed: () {
+                          stateModel.updateLastRefreshUnsyncTime(null);
                           settingModel.setLocalFolder(path.name);
                           SharedPreferences.getInstance().then((prefs) {
                             prefs.setString("localFolder", path.name);
                           });
+                          eventBus.fire(LocalRefreshEvent(refreshUnSync: true));
                           Navigator.pop(context);
                         },
                         child: Text(l10n.choose),

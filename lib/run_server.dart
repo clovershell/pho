@@ -10,7 +10,10 @@ Future<String> runServer() async {
   if (Platform.isAndroid) {
     ports = await const MethodChannel('com.example.img_syncer/RunGrpcServer')
         .invokeMethod('RunGrpcServer');
-  } else if (Platform.isIOS) {
+  } else if (Platform.isIOS || Platform.isMacOS) {
+    ports = await const MethodChannel('com.example.img_syncer/RunGrpcServer')
+        .invokeMethod('RunGrpcServer');
+  } else {
     ports = await const MethodChannel('com.example.img_syncer/RunGrpcServer')
         .invokeMethod('RunGrpcServer');
   }

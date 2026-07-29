@@ -6,10 +6,32 @@
 #endif
 
 #include "flutter/generated_plugin_registrant.h"
+#include "lib/run.h"
+
+static void server_run_handler(FlMethodChannel* channel,
+                                        FlMethodCall* method_call,
+                                        gpointer user_data) {
+  g_autoptr(FlMethodResponse) response = nullptr;
+  if (strcmp(fl_method_call_get_name(method_call), "RunGrpcServer") == 0) {
+    RunGrpcServer_return re = RunGrpcServer();
+    gchar* str = (gchar*)malloc(42);
+    sprintf(str, "%lld,%lld", (long long)re.r0, (long long)re.r1);
+    g_autoptr(FlValue) result = fl_value_new_string(str);
+    response = FL_METHOD_RESPONSE(fl_method_success_response_new(result));
+  } else {
+    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+  }
+
+  g_autoptr(GError) error = nullptr;
+  if (!fl_method_call_respond(method_call, response, &error)) {
+    g_warning("Failed to send response: %s", error->message);
+  }
+}
 
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
+  FlMethodChannel* run_server_channel;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
@@ -59,6 +81,13 @@ static void my_application_activate(GApplication* application) {
 
   fl_register_plugins(FL_PLUGIN_REGISTRY(view));
 
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  self->run_server_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+      "com.example.img_syncer/RunGrpcServer", FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(
+      self->run_server_channel, server_run_handler, self, nullptr);
+
   gtk_widget_grab_focus(GTK_WIDGET(view));
 }
 
@@ -85,6 +114,7 @@ static gboolean my_application_local_command_line(GApplication* application, gch
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
+  g_clear_object(&self->run_server_channel);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 

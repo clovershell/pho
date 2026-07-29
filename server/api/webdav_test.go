@@ -98,14 +98,41 @@ func (s *DriveWebdavTestSuite) TestUploadDownload() {
 	s.waitFile(filePath, 5*time.Second)
 	fdata, err := s.cli.Read(filePath)
 	s.Nil(err)
-	s.Equal(len(fdata), len(static.Pic1))
-	// s.Equalf(fdata, static.Pic1, "file data not equal")
+	s.Equal(static.Pic1, fdata)
 
 	// test download
 	data, err := s.get(ctx, pic1ShouldPath)
 	s.Nil(err)
-	s.Equal(len(data), len(static.Pic1))
-	// s.Equalf(data, static.Pic1, "file data not equal")
+	s.Equal(static.Pic1, data)
+}
+
+// TestSetDriveWebdav_NonExistentRoot verifies that setting a non-existent
+// root path on WebDAV returns Success=false.
+func (s *DriveWebdavTestSuite) TestSetDriveWebdav_NonExistentRoot() {
+	ctx := context.Background()
+	rsp, err := s.srv.SetDriveWebdav(ctx, &pb.SetDriveWebdavRequest{
+		Addr:     webdavSrvAddr,
+		Username: webdavUser,
+		Password: webdavPass,
+		Root:     "nonexistent",
+	})
+	s.Nil(err)
+	s.Falsef(rsp.Success, "expected failure for non-existent root, got Success=true")
+	s.Contains(rsp.Message, "set root path failed")
+}
+
+// TestSetDriveWebdav_BadCredentials verifies that wrong credentials
+// are detected by the connectivity check (Stat("/")), returning
+// Success=false.
+func (s *DriveWebdavTestSuite) TestSetDriveWebdav_BadCredentials() {
+	ctx := context.Background()
+	rsp, err := s.srv.SetDriveWebdav(ctx, &pb.SetDriveWebdavRequest{
+		Addr:     webdavSrvAddr,
+		Username: webdavUser,
+		Password: "wrongPassword123",
+	})
+	s.Nil(err)
+	s.Falsef(rsp.Success, "expected failure for bad credentials, got Success=true. Message: %s", rsp.Message)
 }
 
 // waitFile waits for file to be ready
@@ -140,7 +167,7 @@ func (s *DriveWebdavTestSuite) get(ctx context.Context, path string) ([]byte, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(resp.Status)
+		return nil, fmt.Errorf("%s", resp.Status)
 	}
 	return io.ReadAll(resp.Body)
 }

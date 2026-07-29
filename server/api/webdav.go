@@ -14,7 +14,13 @@ func (a *api) SetDriveWebdav(ctx context.Context, req *pb.SetDriveWebdavRequest)
 		rsp.Success, rsp.Message = false, "param error: url is empty"
 		return
 	}
-	d := webdav.NewWebdavDrive(req.Addr, req.Username, req.Password)
+	d := webdav.NewWebdavDrive(req.Addr, req.Username, req.Password, req.Insecure)
+	// Verify server is reachable with credentials by stat-ing root.
+	_, err := d.Cli().Stat("/")
+	if err != nil {
+		rsp.Success, rsp.Message = false, fmt.Sprintf("connect to %s failed: %s", req.Addr, err.Error())
+		return
+	}
 	a.im.SetDrive(d)
 	if req.Root != "" {
 		err := d.SetRootPath(req.Root)

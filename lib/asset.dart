@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:ui' as ui;
-
+import 'package:extended_image/extended_image.dart';
+import 'package:img_syncer/global.dart';
+import 'package:img_syncer/logger/logger.dart';
 import 'package:img_syncer/proto/img_syncer.pbgrpc.dart';
+import 'package:img_syncer/state_model.dart';
 import 'package:img_syncer/storage/storage.dart';
 import 'package:path/path.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -11,7 +14,12 @@ import 'package:intl/intl.dart';
 import 'package:exif/exif.dart';
 import 'package:image/image.dart' as img;
 import 'package:flutter/services.dart';
+import 'package:img_syncer/util.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:io';
+
+import 'package:video_player/video_player.dart';
 
 class Asset extends ImageProvider<Asset> {
   bool hasLocal = false;
@@ -20,14 +28,20 @@ class Asset extends ImageProvider<Asset> {
   RemoteImage? remote;
   Completer<Uint8List>? _thumbnailDataCompleter;
   Uint8List? _thumbnailData;
+  bool _isThumbnailDataValid = true;
   Completer<Uint8List>? _dataAsyncCompleter;
   Uint8List? _data;
+  bool _isDataValid = true;
+  Duration? _cachedDuration;
+  bool _durationLoading = false;
+  /// 原图加载进度 (0.0~1.0), -1 表示未在加载/已完成
+  final ValueNotifier<double> imageLoadProgress = ValueNotifier<double>(-1);
 
   String? make;
   String? model;
   int? imageWidth;
   int? imageHeight;
-  double imageSize = 0;
+  double? imageSize = 0;
   String? date;
   String? iSO;
   String? exposureTime;
@@ -39,8 +53,10 @@ class Asset extends ImageProvider<Asset> {
 
   Asset({this.local, this.remote}) {
     if (local != null) {
-      // getLocalFile();
       hasLocal = true;
+      if (assetModel.titleCache.containsKey(local!.id)) {
+        localTitle = assetModel.titleCache[local!.id];
+      }
     }
     if (remote != null) {
       hasRemote = true;
@@ -60,24 +76,31 @@ class Asset extends ImageProvider<Asset> {
       return localFile;
     }
     if (hasLocal) {
-      localFile = await local!.originFile;
-      localTitle = await local!.titleAsync;
+      await Future.wait([
+        local!.originFile.then((value) => localFile = value),
+      ]);
     }
     return localFile;
   }
 
-  String? name() {
+  Future<String> name() async {
     if (hasLocal) {
-      if (localTitle != null && localTitle != "") {
-        return localTitle;
-      }
+      String title;
       if (local!.title != null && local!.title != "") {
-        return local!.title;
+        assetModel.addTitleCache(local!.id, local!.title!);
+        localTitle = local!.title!;
+        title = local!.title!;
+      } else if (localTitle != null && localTitle != "") {
+        title = localTitle!;
+      } else if (assetModel.titleCache.containsKey(local!.id)) {
+        localTitle = assetModel.titleCache[local!.id];
+        title = localTitle!;
+      } else {
+        localTitle = await local!.titleAsync;
+        assetModel.addTitleCache(local!.id, localTitle!);
+        title = localTitle!;
       }
-      if (localFile != null) {
-        return basename(localFile!.path);
-      }
-      return local!.title;
+      return title;
     }
     if (hasRemote) {
       return basename(remote!.path);
@@ -85,58 +108,40 @@ class Asset extends ImageProvider<Asset> {
     return "";
   }
 
-  String? mimeType() {
-    if (name() == null) {
-      return null;
+  Future<String> nameDecoded() async {
+    if (hasLocal) {
+      return await name();
+    }
+    final realName = basename(remote!.path);
+    if (realName.length < 15 || realName[14] != '_') {
+      return realName;
+    }
+    return realName.substring(15);
+  }
+
+  Future<String> originName() async {
+    if (hasLocal) {
+      return await name();
+    } else {
+      String oName = await nameDecoded();
+      if (extension(oName) == ".aes") {
+        oName = oName.substring(0, oName.length - 4);
+      }
+      return oName;
+    }
+  }
+
+  Future<String?> mimeType() async {
+    String fileName = await name();
+    if (extension(fileName) == ".aes") {
+      fileName = fileName.substring(0, fileName.length - 4);
     }
     final RegExp regex = RegExp(r'\.([a-zA-Z0-9]+)$');
-    final Match? match = regex.firstMatch(name()!);
+    final Match? match = regex.firstMatch(fileName);
 
     if (match != null && match.groupCount > 0) {
-      final String extension = match.group(1)?.toLowerCase() ?? '';
-
-      switch (extension) {
-        case 'jpg':
-        case 'jpeg':
-          return 'image/jpeg';
-        case 'png':
-          return 'image/png';
-        case 'gif':
-          return 'image/gif';
-        case 'bmp':
-          return 'image/bmp';
-        case 'webp':
-          return 'image/webp';
-        case 'heic':
-          return 'image/heic';
-        case 'heif':
-          return 'image/heif';
-        case 'dng':
-          return 'image/x-adobe-dng';
-        case 'tif':
-        case 'tiff':
-          return 'image/tiff';
-        case 'cr2':
-          return 'image/x-canon-cr2';
-        case 'nef':
-          return 'image/x-nikon-nef';
-        case 'arw':
-          return 'image/x-sony-arw';
-        case 'rw2':
-          return 'image/x-panasonic-rw2';
-        case 'orf':
-          return 'image/x-olympus-orf';
-        case 'pef':
-          return 'image/x-pentax-pef';
-        case 'raf':
-          return 'image/x-fuji-raf';
-        case 'x3f':
-          return 'image/x-sigma-x3f';
-        case 'srw':
-          return 'image/x-samsung-srw';
-        default:
-          return null;
-      }
+      final String extensionName = match.group(1)?.toLowerCase() ?? '';
+      return mimeTypeByExtension(extensionName);
     } else {
       return null;
     }
@@ -147,20 +152,26 @@ class Asset extends ImageProvider<Asset> {
       return local!.createDateTime;
     }
     if (hasRemote) {
-      RegExp datePattern = RegExp(r'(\d{4})/(\d{2})/(\d{2})');
-      Match? match = datePattern.firstMatch(remote!.path);
+      final filePath = remote!.path;
+      var format1 = RegExp(r'^(\d{4})/(\d{2})/(\d{2})/');
+      var format2 = RegExp(r'^(\d{4})(\d{2})(\d{2})/');
 
+      // Check if file path matches the first format.
+      var match = format1.firstMatch(filePath);
       if (match != null) {
-        if (match.groupCount != 3) {
-          return DateTime.now();
-        }
-        int year = int.parse(match.group(1)!);
-        int month = int.parse(match.group(2)!);
-        int day = int.parse(match.group(3)!);
+        var year = match.group(1);
+        var month = match.group(2);
+        var day = match.group(3);
+        return DateTime.parse('$year$month$day');
+      }
 
-        return DateTime(year, month, day);
-      } else {
-        return DateTime.now();
+      // Check if file path matches the second format.
+      match = format2.firstMatch(filePath);
+      if (match != null) {
+        var year = match.group(1);
+        var month = match.group(2);
+        var day = match.group(3);
+        return DateTime.parse('$year$month$day');
       }
     }
     return DateTime.now();
@@ -183,6 +194,73 @@ class Asset extends ImageProvider<Asset> {
     return false;
   }
 
+  Future<Duration> videoDuration() async {
+    if (!isVideo()) {
+      return Duration.zero;
+    }
+    if (hasLocal) {
+      return local!.videoDuration;
+    }
+    if (hasRemote) {
+      if (_cachedDuration != null) {
+        return _cachedDuration!;
+      }
+      if (_durationLoading) {
+        return Duration.zero;
+      }
+      _durationLoading = true;
+      try {
+        var uri = remote!.path;
+        if (uri[0] != '/') {
+          uri = "/$uri";
+        }
+        final url = "$httpBaseUrl$uri";
+        final controller = VideoPlayerController.networkUrl(
+          Uri.parse(url),
+        );
+        await controller.initialize();
+        _cachedDuration = controller.value.duration;
+        controller.dispose();
+        return _cachedDuration ?? Duration.zero;
+      } catch (e) {
+        logger.addLog("Failed to get remote video duration: $e");
+        return Duration.zero;
+      } finally {
+        _durationLoading = false;
+      }
+    }
+    return Duration.zero;
+  }
+
+  bool isLivePhoto() {
+    if (hasLocal) {
+      return local!.isLivePhoto;
+    }
+    if (hasRemote) {
+      return remote!.isLivePhoto;
+    }
+    return false;
+  }
+
+  Future<VideoPlayerController?> getLivePhotoVideoController() async {
+    if (hasLocal) {
+      final File? videoFile = await local!.fileWithSubtype;
+      if (videoFile != null) {
+        return VideoPlayerController.file(videoFile);
+      }
+    }
+    if (hasRemote) {
+      var uri = remote!.path;
+      if (uri[0] != '/') {
+        uri = "/$uri";
+      }
+      final url = "$httpBaseUrl/live$uri";
+      final controller = VideoPlayerController.network(url);
+      return controller;
+    }
+    return null;
+  }
+
   bool loadThumbnailFinished() {
     return _thumbnailData != null;
   }
@@ -193,7 +271,7 @@ class Asset extends ImageProvider<Asset> {
         return MemoryImage(_thumbnailData!);
       }
     } catch (e) {
-      print(e);
+      logger.addLog(e.toString());
     }
     return Image.asset("assets/images/gray.jpg").image;
   }
@@ -214,18 +292,19 @@ class Asset extends ImageProvider<Asset> {
     if (hasRemote) {
       data = await remote!.thumbnail();
     }
-    if (data == null || data.isEmpty || !await isValidImage(data)) {
-      final brokenData = await rootBundle.load("assets/images/gray.jpg");
+    if (data == null || data.isEmpty) {
+      final brokenData = await rootBundle.load("assets/images/broken.png");
       _thumbnailDataCompleter!.complete(brokenData.buffer.asUint8List());
       return brokenData.buffer.asUint8List();
     } else {
+      _isThumbnailDataValid = await isValidImage(data);
       _thumbnailDataCompleter!.complete(data);
       _thumbnailData = data;
       return data;
     }
   }
 
-  Future<Uint8List> imageDataAsync() async {
+  Future<Uint8List> imageDataAsync({bool reportProgress = false}) async {
     if (_data != null) {
       return _data!;
     }
@@ -233,6 +312,11 @@ class Asset extends ImageProvider<Asset> {
       return _dataAsyncCompleter!.future;
     }
     _dataAsyncCompleter = Completer<Uint8List>();
+    // 非下载场景通过 imageLoadProgress 轻量通知进度，不触发 notifyListeners
+    final bool useLightProgress = !reportProgress && hasRemote && !remote!.isVideo();
+    if (useLightProgress) {
+      imageLoadProgress.value = 0;
+    }
     Uint8List? data;
     try {
       if (hasLocal) {
@@ -245,13 +329,25 @@ class Asset extends ImageProvider<Asset> {
       }
       if (hasRemote) {
         if (!remote!.isVideo()) {
-          data = await remote!.imageData();
+          data = await remote!.imageData(
+            reportProgress: reportProgress,
+            onProgress: useLightProgress
+                ? (downloaded, total) {
+                    if (total > 0) {
+                      imageLoadProgress.value = downloaded / total;
+                    }
+                  }
+                : null,
+          );
         } else {
           data = await remote!.thumbnail();
         }
       }
     } catch (e) {
-      print("Get image data failed: $e");
+      logger.addLog("Get image data failed: $e");
+    }
+    if (useLightProgress) {
+      imageLoadProgress.value = 1;
     }
     if (data == null || data.isEmpty) {
       final brokenData = await rootBundle.load("assets/images/broken.png");
@@ -264,15 +360,31 @@ class Asset extends ImageProvider<Asset> {
     }
   }
 
-  String path() {
+  Future<String> downloadToTmpFilePath() async {
+    if (hasLocal) {
+      final file = await local!.originFile;
+      return file!.path;
+    } else {
+      final stream = remote!.dataStream();
+      final directory = await getTemporaryDirectory();
+      final filePath = '${directory.path}/${originName()}';
+      final file = File(filePath);
+      final fileStream = file.openWrite();
+      await for (var data in stream) {
+        fileStream.add(data);
+      }
+      await fileStream.close();
+      return filePath;
+    }
+  }
+
+  Future<String> path() async {
     if (hasLocal) {
       if (localFile != null) {
         return localFile!.path;
       }
-      if (local!.relativePath == null) {
-        return "unknown";
-      }
-      return "${local!.relativePath!}${local!.title}";
+      localFile = await local!.originFile;
+      return localFile!.path;
     }
     if (hasRemote) {
       return remote!.path;
@@ -280,12 +392,21 @@ class Asset extends ImageProvider<Asset> {
     return "";
   }
 
+  Future<String> unencryptedPath() async {
+    String p = await path();
+    if (extension(p) == ".aes") {
+      p = p.substring(0, p.length - 4);
+    }
+    return p;
+  }
+
   Future<void> delete() async {
     if (hasLocal) {
       await PhotoManager.editor.deleteWithIds([local!.id]);
     }
     if (hasRemote) {
-      final rsp = await remote!.cli.delete(DeleteRequest());
+      final rsp =
+          await remote!.cli.delete(DeleteRequest(paths: [remote!.path]));
       if (!rsp.success) {
         throw Exception("delete failed: ${rsp.message}");
       }
@@ -304,32 +425,61 @@ class Asset extends ImageProvider<Asset> {
     return _isSizeInfoReadedFinished && _isExifInfoReadedFinished;
   }
 
+  Future<double> size() async {
+    if (!isVideo() && imageSize != null && imageSize != 0) {
+      return imageSize!;
+    }
+    if (hasLocal) {
+      final f = await local!.originFile;
+      if (f != null) {
+        imageSize = await f.length() / 1024 / 1024;
+        return imageSize!;
+      }
+    }
+    if (hasRemote && remote!.size != null) {
+      imageSize = remote!.size! / 1024 / 1024;
+      return imageSize!;
+    }
+    return 0;
+  }
+
   Future<void> readInfoFromData() async {
     if (_isInfoReaded) {
       return;
     }
     _isInfoReaded = true;
     final data = await imageDataAsync();
+    imageSize = data.length / 1024 / 1024;
     if (isLocal()) {
       imageWidth = getLocal()!.width;
       imageHeight = getLocal()!.height;
       imageSize = data.length / 1024 / 1024;
       _isSizeInfoReadedFinished = true;
     } else {
-      compute(img.decodeImage, data).then((image) {
-        if (image != null) {
-          imageWidth = image.width;
-          imageHeight = image.height;
-          imageSize = data.length / 1024 / 1024;
-        }
+      img.Decoder? decoder = img.findDecoderForNamedImage(await originName());
+      decoder ??= img.findDecoderForData(data);
+      if (decoder != null) {
+        compute(decoder.decode, data).then((image) {
+          if (image != null) {
+            imageWidth = image.width;
+            imageHeight = image.height;
+          }
+          _isSizeInfoReadedFinished = true;
+        }, onError: (e) {
+          logger.addLog(e);
+          _isSizeInfoReadedFinished = true;
+        });
+      } else {
         _isSizeInfoReadedFinished = true;
-      });
-      _isSizeInfoReadedFinished = true;
+      }
     }
     compute(readExifFromBytes, data).then((exifData) {
       if (exifData.isEmpty) {
-        print("No Exif data found");
+        logger.addLog("No Exif data found");
       } else {
+        int? exifWidth;
+        int? exifHeight;
+        int? Rotated;
         for (String key in exifData.keys) {
           // print("$key: ${exifData[key]!.printable}");
           switch (key) {
@@ -348,7 +498,7 @@ class Asset extends ImageProvider<Asset> {
                   DateFormat dateFormat = DateFormat('yyyy-MM-dd HH:mm:ss');
                   date = dateFormat.format(dateTime);
                 } catch (e) {
-                  print(e);
+                  logger.addLog(e.toString());
                 }
               }
               break;
@@ -369,7 +519,7 @@ class Asset extends ImageProvider<Asset> {
                 double value = numerator / denominator;
                 fNumber = value.toStringAsFixed(1);
               } catch (e) {
-                print(e);
+                logger.addLog(e.toString());
               }
               break;
             case "EXIF FocalLength":
@@ -382,11 +532,42 @@ class Asset extends ImageProvider<Asset> {
                 double value = numerator / denominator;
                 focalLength = value.toStringAsFixed(2);
               } catch (e) {
-                print(e);
+                logger.addLog(e.toString());
+              }
+              break;
+            case "EXIF ExifImageWidth":
+              final w = int.parse(exifData[key]!.toString());
+              if (w > 0 && imageHeight == null) {
+                exifWidth = w;
+              }
+              break;
+            case "EXIF ExifImageLength":
+              final h = int.parse(exifData[key]!.toString());
+              if (h > 0 && imageWidth == null) {
+                exifHeight = h;
+              }
+              break;
+            case "Image Orientation":
+              RegExp regex = RegExp(r'(\d+)');
+              Match? match = regex.firstMatch(exifData[key]!.toString());
+              if (match != null) {
+                Rotated = int.parse(match.group(1)!);
               }
               break;
             default:
               break;
+          }
+        }
+        if (imageWidth == null &&
+            imageHeight == null &&
+            exifWidth != null &&
+            exifHeight != null) {
+          if (Rotated == 0 || Rotated == 180) {
+            imageWidth = exifWidth;
+            imageHeight = exifHeight;
+          } else {
+            imageWidth = exifHeight;
+            imageHeight = exifWidth;
           }
         }
       }
@@ -401,16 +582,16 @@ class Asset extends ImageProvider<Asset> {
 
   @override
   ImageStreamCompleter loadBuffer(Asset key, DecoderBufferCallback decode) {
-    if (extension(path()) == ".gif") {
-      return MultiFrameImageStreamCompleter(
-        codec: _loadAsyncMultiFrame(key, decode),
-        scale: 1,
-        informationCollector: () sync* {
-          yield ErrorDescription('Image provider: ${describeIdentity(key)}');
-        },
-      );
-    }
-    return OneFrameImageStreamCompleter(_loadAsync(key, decode));
+    return MultiFrameImageStreamCompleter(
+      codec: _loadAsyncMultiFrame(key, decode),
+      scale: 1,
+      informationCollector: () sync* {
+        yield ErrorDescription('Image provider: ${describeIdentity(key)}');
+      },
+    );
+    // if (extension(unencryptedPath()) == ".gif") {
+    // }
+    // return OneFrameImageStreamCompleter(_loadAsync(key, decode));
   }
 
   Future<ImageInfo> _loadAsync(Asset key, DecoderBufferCallback decode) async {
@@ -423,7 +604,8 @@ class Asset extends ImageProvider<Asset> {
       final ui.FrameInfo fi = await codec.getNextFrame();
       return ImageInfo(image: fi.image);
     } catch (e) {
-      print(e);
+      logger.addLog(e.toString());
+      _isDataValid = false;
     }
     return await loadImage("assets/images/gray.jpg");
   }
@@ -438,7 +620,8 @@ class Asset extends ImageProvider<Asset> {
       final ui.Codec codec = await ui.instantiateImageCodec(data);
       return codec;
     } catch (e) {
-      print(e);
+      logger.addLog("find codec failed: $e");
+      _isDataValid = false;
     }
     // If the data is invalid, you might want to load a fallback image.
     // For this, you'll need to load the bytes for the fallback image and instantiate the codec for that.
@@ -456,6 +639,15 @@ class Asset extends ImageProvider<Asset> {
   String toString() => 'Asset(local: $local, remote: $remote)';
 }
 
+Future<bool> isValidImage(Uint8List imageData) async {
+  try {
+    final ui.Codec codec = await ui.instantiateImageCodec(imageData);
+    return codec != null;
+  } catch (e) {
+    return false;
+  }
+}
+
 Future<ImageInfo> loadImage(String path) async {
   final Completer<ImageInfo> completer = Completer();
   final ImageProvider provider = AssetImage(path);
@@ -470,14 +662,4 @@ Future<ImageInfo> loadImage(String path) async {
   completer.future.then((_) => stream.removeListener(listener));
 
   return completer.future;
-}
-
-Future<bool> isValidImage(Uint8List imageData) async {
-  try {
-    final codec =
-        await PaintingBinding.instance.instantiateImageCodec(imageData);
-    return codec != null;
-  } catch (e) {
-    return false;
-  }
 }

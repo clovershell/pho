@@ -4,47 +4,143 @@ import 'package:img_syncer/run_server.dart';
 import 'package:img_syncer/sync_timer.dart';
 import 'package:img_syncer/state_model.dart';
 import 'package:img_syncer/storage/storage.dart';
+import 'package:img_syncer/util.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:img_syncer/logger.dart';
+import 'package:img_syncer/logger/logger.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_gen/gen_l10n/app_localizations.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:img_syncer/l10n/app_localizations.dart';
 import 'dart:async';
 import 'dart:io';
+
+import 'event_bus.dart';
 
 late String httpBaseUrl;
 late int grpcPort;
 late int httpPort;
+bool useRemoteServer = false;
+bool isDebug = false;
+
+Color? seedColor;
 
 class Global {
   static Future init() async {
+    assert(() {
+      if (!Platform.isIOS) {
+        isDebug = true;
+      }
+      return true;
+    }());
     runServer().then((portsStr) async {
       final ports = portsStr.split(",");
       if (ports.length != 2) {
-        logger.e("grpc server start failed");
+        logger.addLog("grpc server start failed");
         return;
       }
       httpBaseUrl = "http://127.0.0.1:${ports[1]}";
       grpcPort = int.parse(ports[0]);
       httpPort = int.parse(ports[1]);
       storage = RemoteStorage("127.0.0.1", int.parse(ports[0]));
-      // storage = RemoteStorage("192.168.100.235", 50051);
+      if (useRemoteServer) {
+        httpBaseUrl = "http://192.168.100.213:8000";
+        storage = RemoteStorage("192.168.100.213", 50051);
+      }
+
       final prefs = await SharedPreferences.getInstance();
-      final localFolder = prefs.getString("localFolder");
-      if (localFolder != null && localFolder.isNotEmpty) {
-        settingModel.setLocalFolder(localFolder);
-      } else {
-        final re = await requestPermission();
-        if (!re) return;
-        final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
-            type: RequestType.common, hasAll: true);
-        // ignore: deprecated_member_use
-        paths.sort((a, b) => b.assetCount.compareTo(a.assetCount));
-        if (paths.isNotEmpty) {
-          settingModel.setLocalFolder(paths[0].name);
+      if (isDesktop()) {
+        final galleryColumCount = prefs.getInt("galleryColumCount");
+        if (galleryColumCount != null) {
+          settingModel.setGalleryColumCount(galleryColumCount);
+        } else {
+          settingModel.setGalleryColumCount(10);
+        }
+        var enableEncrypt = prefs.getBool("enable_encrypt");
+        // 从旧 key (enalble_encrypt) 迁移
+        if (enableEncrypt == null) {
+          enableEncrypt = prefs.getBool("enalble_encrypt");
+          if (enableEncrypt != null) {
+            prefs.setBool("enable_encrypt", enableEncrypt);
+            prefs.remove("enalble_encrypt");
+          }
+        }
+        if (enableEncrypt != null) {
+          settingModel.setEncryptSwitch(enableEncrypt);
+        }
+        final encryptionType = prefs.getInt("encryption_type");
+        if (encryptionType != null) {
+          settingModel.setEncryptionType(EncryptionType.values[encryptionType]);
+        }
+        final encPassword = prefs.getString("encryption_password");
+        if (encPassword != null) {
+          settingModel.setEncryptionPassword(encPassword);
+        }
+        await initDrive();
+        return;
+      }
+      var enableEncrypt = prefs.getBool("enable_encrypt");
+      // 从旧 key (enalble_encrypt) 迁移
+      if (enableEncrypt == null) {
+        enableEncrypt = prefs.getBool("enalble_encrypt");
+        if (enableEncrypt != null) {
+          prefs.setBool("enable_encrypt", enableEncrypt);
+          prefs.remove("enalble_encrypt");
         }
       }
+      if (enableEncrypt != null) {
+        settingModel.setEncryptSwitch(enableEncrypt);
+      }
+      final encryptionType = prefs.getInt("encryption_type");
+      if (encryptionType != null) {
+        settingModel.setEncryptionType(EncryptionType.values[encryptionType]);
+      }
+      final encPassword = prefs.getString("encryption_password");
+      if (encPassword != null) {
+        settingModel.setEncryptionPassword(encPassword);
+      }
+      final seedColorValue = prefs.getInt("seed_color");
+      if (seedColorValue != null) {
+        seedColor = Color(seedColorValue);
+      }
+      final galleryColumCount = prefs.getInt("galleryColumCount");
+      if (galleryColumCount != null) {
+        settingModel.setGalleryColumCount(galleryColumCount);
+      }
+
+      final localFolder = prefs.getString("localFolder");
+      if (localFolder != null && localFolder != "") {
+        settingModel.setLocalFolder(localFolder);
+        if (localFolder != "") {
+          eventBus.fire(LocalRefreshEvent(refreshUnSync: false));
+        }
+      } else {
+        await requestPermission(alert: false);
+        if (Platform.isIOS) {
+          settingModel.setLocalFolder("Recents");
+          await prefs.setString("localFolder", "Recents");
+          eventBus.fire(LocalRefreshEvent(refreshUnSync: true));
+        } else {
+          final List<AssetPathEntity> paths =
+              await PhotoManager.getAssetPathList(
+                  type: RequestType.common, hasAll: true);
+          final Map<AssetPathEntity, int> assetCountMap = {
+            for (final p in paths) p: await p.assetCountAsync,
+          };
+          paths.sort((a, b) =>
+              (assetCountMap[b] ?? 0).compareTo(assetCountMap[a] ?? 0));
+          if (paths.isNotEmpty) {
+            settingModel.setLocalFolder(paths[0].name);
+            await prefs.setString("localFolder", paths[0].name);
+            eventBus.fire(LocalRefreshEvent(refreshUnSync: true));
+          }
+        }
+      }
+      final lastRefreshUnsyncTime = prefs.getInt("last_refersh_unsync");
+      if (lastRefreshUnsyncTime != null) {
+        stateModel.updateLastRefreshUnsyncTime(
+            DateTime.fromMillisecondsSinceEpoch(lastRefreshUnsyncTime));
+      }
+      await assetModel.loadTitleCache();
+      await loadUnsynchronizedPhotos();
       await initDrive();
       reloadAutoSyncTimer();
     });
@@ -53,21 +149,23 @@ class Global {
 
 DateTime? lastAliveTime;
 Future<void> checkServer() async {
+  if (useRemoteServer) {
+    return;
+  }
   if (lastAliveTime != null &&
       DateTime.now().difference(lastAliveTime!) < const Duration(seconds: 60)) {
     return;
   }
   try {
-    var socket = await Socket.connect('127.0.0.1', grpcPort);
-    socket.destroy();
+    await storage.cli.ping(PingRequest());
     lastAliveTime = DateTime.now();
   } catch (e) {
-    print("connect 127.0.0.1:$grpcPort failed: $e");
-    print("reboot server");
+    logger.addLog("ping 127.0.0.1:$grpcPort failed: $e");
+    logger.addLog("reboot server");
     final portsStr = await runServer();
     final ports = portsStr.split(",");
     if (ports.length != 2) {
-      logger.e("grpc server start failed");
+      logger.addLog("grpc server start failed");
       return;
     }
     httpBaseUrl = "http://127.0.0.1:${ports[1]}";
@@ -102,8 +200,9 @@ Future<void> initDrive() async {
           root: root,
         ));
         if (rsp.success) {
-          print("set drive smb success");
+          logger.addLog("set drive smb success");
           settingModel.setRemoteStorageSetted(true);
+          eventBus.fire(RemoteRefreshEvent(refreshUnSync: false));
         } else {
           settingModel.setRemoteStorageSetted(false);
           assetModel.remoteLastError = rsp.message;
@@ -115,17 +214,19 @@ Future<void> initDrive() async {
       final username = prefs.getString('webdav_username');
       final password = prefs.getString('webdav_password');
       final root = prefs.getString('webdav_root_path');
+      final insecure = prefs.getBool('webdav_insecure') ?? true;
       if (url != null && root != null) {
         final rsp = await storage.cli.setDriveWebdav(SetDriveWebdavRequest(
           addr: url,
           username: username,
           password: password,
           root: root,
+          insecure: insecure,
         ));
         if (rsp.success) {
-          logger.i("set drive webdav success");
+          logger.addLog("set drive webdav success");
           settingModel.setRemoteStorageSetted(true);
-          // refreshUnsynchronizedPhotos();
+          eventBus.fire(RemoteRefreshEvent(refreshUnSync: false));
         } else {
           settingModel.setRemoteStorageSetted(false);
           assetModel.remoteLastError = rsp.message;
@@ -141,37 +242,15 @@ Future<void> initDrive() async {
           root: root,
         ));
         if (rsp.success) {
-          logger.i("set drive nfs success");
+          logger.addLog("set drive nfs success");
           settingModel.setRemoteStorageSetted(true);
-          // refreshUnsynchronizedPhotos();
+          eventBus.fire(RemoteRefreshEvent(refreshUnSync: false));
         } else {
           settingModel.setRemoteStorageSetted(false);
           assetModel.remoteLastError = rsp.message;
         }
       }
       break;
-    case Drive.baiduNetdisk:
-      final refreshToken = prefs.getString("baidu_refresh_token");
-      final accessToken = prefs.getString("baidu_access_token");
-      final expiresAt = prefs.getInt("baidu_expires_at");
-      if (refreshToken == null || refreshToken == "") {
-        break;
-      }
-      final temporaryDir = await getTemporaryDirectory();
-      print("temp dir: ${temporaryDir.path}");
-      final rsp =
-          await storage.cli.setDriveBaiduNetDisk(SetDriveBaiduNetDiskRequest(
-        refreshToken: refreshToken,
-        accessToken: accessToken,
-        tmpDir: temporaryDir.path,
-      ));
-      if (rsp.success) {
-        logger.i("set drive baidu netdisk success");
-        settingModel.setRemoteStorageSetted(true);
-      } else {
-        settingModel.setRemoteStorageSetted(false);
-        assetModel.remoteLastError = rsp.message;
-      }
   }
 }
 
@@ -184,15 +263,15 @@ class SnackBarManager {
 
   SnackBarManager._internal();
 
-  static BuildContext? _context;
+  static BuildContext? globalContext;
 
   static void init(BuildContext context) {
-    _context = context;
+    globalContext = context;
   }
 
   static void showSnackBar(String message) {
-    if (_context != null) {
-      ScaffoldMessenger.of(_context!).showSnackBar(
+    if (globalContext != null) {
+      ScaffoldMessenger.of(globalContext!).showSnackBar(
         SnackBar(
           content: Text(message),
         ),
@@ -204,7 +283,7 @@ class SnackBarManager {
 late AppLocalizations l10n;
 
 void initI18n(BuildContext context) {
-  l10n = AppLocalizations.of(context);
+  l10n = AppLocalizations.of(context)!;
 }
 
 Completer<bool>? requesttingPermission;
@@ -213,7 +292,10 @@ void initRequestPermission(BuildContext context) {
   requestPermissionContext = context;
 }
 
-Future<bool> requestPermission() async {
+Future<bool> requestPermission({alert = true}) async {
+  if (isDesktop()) {
+    return true;
+  }
   bool result = false;
   if (requesttingPermission != null) {
     result = await requesttingPermission!.future;
@@ -225,29 +307,31 @@ Future<bool> requestPermission() async {
   if (ps == PermissionState.authorized) {
     result = true;
   } else {
-    result = false;
-    if (requestPermissionContext != null) {
-      showDialog(
-          context: requestPermissionContext!,
-          builder: (BuildContext context) => AlertDialog(
-                title: Text(l10n.needPermision),
-                content: Text(l10n.gotoSystemSetting),
-                actions: [
-                  TextButton(
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                    },
-                    child: Text(l10n.cancel),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      PhotoManager.openSetting();
-                      Navigator.of(context).pop();
-                    },
-                    child: Text(l10n.openSetting),
-                  ),
-                ],
-              ));
+    if (alert) {
+      result = false;
+      if (requestPermissionContext != null) {
+        showDialog(
+            context: requestPermissionContext!,
+            builder: (BuildContext context) => AlertDialog(
+                  title: Text(l10n.needPermision),
+                  content: Text(l10n.gotoSystemSetting),
+                  actions: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                      },
+                      child: Text(l10n.cancel),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        PhotoManager.openSetting();
+                        Navigator.of(context).pop();
+                      },
+                      child: Text(l10n.openSetting),
+                    ),
+                  ],
+                ));
+      }
     }
   }
   requesttingPermission?.complete(result);

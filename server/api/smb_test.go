@@ -82,6 +82,43 @@ func (s *DriveTestSuite) TestSetDriveSMB() {
 	s.Equal(static.Pic1, fdata)
 }
 
+// TestSetDriveSMB_BadCredentials verifies that wrong credentials
+// return Success=false with a set share error message.
+func (s *DriveTestSuite) TestSetDriveSMB_BadCredentials() {
+	ctx := context.Background()
+	rsp, err := s.srv.SetDriveSMB(ctx, &pb.SetDriveSMBRequest{
+		Addr:     smbSrvAddr,
+		Username: smbUser,
+		Password: "wrongPassword123",
+		Share:    smbShare,
+	})
+	s.Nil(err)
+	s.Falsef(rsp.Success, "expected failure for bad credentials, got Success=true. Message: %s", rsp.Message)
+	s.Contains(rsp.Message, "set share failed")
+}
+
+// TestSetDriveSMBShare_NonExistentShare verifies SetDriveSMBShare rejects
+// a share name that does not exist on the SMB server.
+func (s *DriveTestSuite) TestSetDriveSMBShare_NonExistentShare() {
+	ctx := context.Background()
+	// Set up SMB drive with valid credentials first
+	rsp1, err := s.srv.SetDriveSMB(ctx, &pb.SetDriveSMBRequest{
+		Addr:     smbSrvAddr,
+		Username: smbUser,
+		Password: smbPass,
+	})
+	s.Nil(err)
+	s.True(rsp1.Success)
+	// Try to set a non-existent share
+	rsp2, err := s.srv.SetDriveSMBShare(ctx, &pb.SetDriveSMBShareRequest{
+		Share: "nonexistent_share",
+		Root:  "storage",
+	})
+	s.Nil(err)
+	s.Falsef(rsp2.Success, "expected failure for non-existent share, got Success=true")
+	s.Contains(rsp2.Message, "not exist")
+}
+
 func (s *DriveTestSuite) waitFile(path string, timeout time.Duration) {
 	start := time.Now()
 	for {

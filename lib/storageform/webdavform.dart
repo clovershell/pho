@@ -5,6 +5,7 @@ import 'package:img_syncer/state_model.dart';
 import 'package:img_syncer/storage/storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/global.dart';
+import 'package:img_syncer/design_tokens.dart';
 
 class WebDavForm extends StatefulWidget {
   const WebDavForm({Key? key}) : super(key: key);
@@ -23,6 +24,7 @@ class WebDavFormState extends State<WebDavForm> {
   bool testSuccess = false;
   String? errormsg;
   String currentPath = "";
+  bool insecure = false;
 
   @override
   void initState() {
@@ -36,6 +38,9 @@ class WebDavFormState extends State<WebDavForm> {
       usernameController!.text = prefs.getString('webdav_username') ?? "";
       passwordController!.text = prefs.getString('webdav_password') ?? "";
       rootPathController!.text = prefs.getString('webdav_root_path') ?? "";
+      setState(() {
+        insecure = prefs.getBool('webdav_insecure') ?? true;
+      });
     });
   }
 
@@ -48,7 +53,8 @@ class WebDavFormState extends State<WebDavForm> {
     }
     try {
       final rsp2 = await storage.cli.setDriveWebdav(SetDriveWebdavRequest(
-          addr: url, username: username, password: password));
+          addr: url, username: username, password: password,
+          insecure: insecure));
       if (!rsp2.success) {
         setState(() {
           errormsg = rsp2.message;
@@ -89,7 +95,7 @@ class WebDavFormState extends State<WebDavForm> {
   Widget input(
       String label, TextEditingController? c, void Function(String?)? onSaved) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: TextFormField(
         controller: c,
         obscureText: false,
@@ -110,7 +116,8 @@ class WebDavFormState extends State<WebDavForm> {
     final rootPath = rootPathController!.text;
     try {
       final rsp = await storage.cli.setDriveWebdav(SetDriveWebdavRequest(
-          addr: url, username: username, password: password, root: rootPath));
+          addr: url, username: username, password: password, root: rootPath,
+          insecure: insecure));
       if (!rsp.success) {
         setState(() {
           errormsg = rsp.message;
@@ -132,7 +139,7 @@ class WebDavFormState extends State<WebDavForm> {
   Widget testStorageButtun() {
     return Container(
       width: 180,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: FilledButton.tonal(
         onPressed: () {
           testStorage().then((value) {
@@ -151,7 +158,7 @@ class WebDavFormState extends State<WebDavForm> {
   Widget saveButtun() {
     return Container(
       width: 150,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: FilledButton(
         onPressed: testSuccess
             ? () {
@@ -168,7 +175,7 @@ class WebDavFormState extends State<WebDavForm> {
                 });
                 settingModel.setRemoteStorageSetted(true);
                 assetModel.remoteLastError = null;
-                eventBus.fire(RemoteRefreshEvent());
+                eventBus.fire(RemoteRefreshEvent(refreshUnSync: true));
                 Navigator.pop(context);
               }
             : null,
@@ -181,7 +188,7 @@ class WebDavFormState extends State<WebDavForm> {
   Widget build(BuildContext context) {
     List<Widget> children = [];
     children.add(Container(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: TextFormField(
         controller: urlController,
         obscureText: false,
@@ -197,8 +204,21 @@ class WebDavFormState extends State<WebDavForm> {
         input('${l10n.username} (${l10n.optional})', usernameController, null));
     children.add(
         input('${l10n.password} (${l10n.optional})', passwordController, null));
+    children.add(CheckboxListTile(
+      title: const Text('跳过 TLS 证书验证'),
+      subtitle: insecure
+          ? Text('⚠️ 跳过验证有安全风险',
+              style: TextStyle(color: Theme.of(context).colorScheme.error))
+          : null,
+      value: insecure,
+      onChanged: (v) async {
+        setState(() => insecure = v!);
+        final prefs = await SharedPreferences.getInstance();
+        prefs.setBool('webdav_insecure', v!);
+      },
+    ));
     children.add(Container(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: TextFormField(
         controller: rootPathController,
         obscureText: false,
@@ -265,10 +285,10 @@ class WebDavFormState extends State<WebDavForm> {
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ),
-                const Divider(
+                Divider(
                   indent: 20,
                   endIndent: 20,
-                  color: Colors.grey,
+                  color: Theme.of(context).colorScheme.outlineVariant,
                 ),
                 FutureBuilder(
                   future: getRootPath(currentPath),
@@ -312,10 +332,10 @@ class WebDavFormState extends State<WebDavForm> {
                 ),
                 Container(
                   padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
-                  child: const Divider(
+                  child: Divider(
                     indent: 20,
                     endIndent: 20,
-                    color: Colors.grey,
+                    color: Theme.of(context).colorScheme.outlineVariant,
                   ),
                 ),
                 Row(

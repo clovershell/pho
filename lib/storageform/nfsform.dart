@@ -6,6 +6,7 @@ import 'package:img_syncer/storage/storage.dart';
 import 'package:path/path.dart' as path;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/global.dart';
+import 'package:img_syncer/design_tokens.dart';
 
 class NFSForm extends StatefulWidget {
   const NFSForm({Key? key}) : super(key: key);
@@ -130,7 +131,7 @@ class NFSFormState extends State<NFSForm> {
   Widget testStorageButtun() {
     return Container(
       width: 180,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: FilledButton.tonal(
         onPressed: () {
           testStorage().then((value) {
@@ -149,7 +150,7 @@ class NFSFormState extends State<NFSForm> {
   Widget saveButtun() {
     return Container(
       width: 150,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: FilledButton(
         onPressed: testSuccess
             ? () {
@@ -162,7 +163,7 @@ class NFSFormState extends State<NFSForm> {
                 });
                 settingModel.setRemoteStorageSetted(true);
                 assetModel.remoteLastError = null;
-                eventBus.fire(RemoteRefreshEvent());
+                eventBus.fire(RemoteRefreshEvent(refreshUnSync: true));
                 Navigator.pop(context);
               }
             : null,
@@ -178,7 +179,7 @@ class NFSFormState extends State<NFSForm> {
       child: Column(
         children: [
           Container(
-            padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+            padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
             child: TextFormField(
               controller: urlController,
               obscureText: false,
@@ -191,7 +192,7 @@ class NFSFormState extends State<NFSForm> {
             ),
           ),
           Container(
-            padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+            padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
             child: TextFormField(
               controller: rootPathController,
               obscureText: false,
@@ -255,10 +256,10 @@ class NFSFormState extends State<NFSForm> {
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ),
-                const Divider(
+                Divider(
                   indent: 20,
                   endIndent: 20,
-                  color: Colors.grey,
+                  color: Theme.of(context).colorScheme.outlineVariant,
                 ),
                 FutureBuilder(
                   future: getRootPath(currentPath),
@@ -304,10 +305,10 @@ class NFSFormState extends State<NFSForm> {
                 ),
                 Container(
                   padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
-                  child: const Divider(
+                  child: Divider(
                     indent: 20,
                     endIndent: 20,
-                    color: Colors.grey,
+                    color: Theme.of(context).colorScheme.outlineVariant,
                   ),
                 ),
                 Row(

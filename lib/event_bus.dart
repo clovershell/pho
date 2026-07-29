@@ -4,9 +4,34 @@ import 'package:event_bus/event_bus.dart';
 EventBus eventBus = EventBus();
 
 class LocalRefreshEvent {
-  LocalRefreshEvent();
+  LocalRefreshEvent({this.refreshUnSync = true});
+  bool refreshUnSync = true;
 }
 
 class RemoteRefreshEvent {
-  RemoteRefreshEvent();
+  RemoteRefreshEvent({this.refreshUnSync = true});
+  bool refreshUnSync = true;
+}
+
+class FinishGettingLocal {
+  FinishGettingLocal();
+}
+
+class FinishGettingRemote {
+  FinishGettingRemote();
+}
+
+class BuyProEvent {
+  BuyProEvent();
+}
+
+class IAPPendingEvent {
+  IAPPendingEvent();
+}
+
+class IAPErrorEvent {
+  IAPErrorEvent(
+    this.err,
+  );
+  String? err;
 }

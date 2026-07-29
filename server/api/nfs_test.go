@@ -100,6 +100,27 @@ func (s *DriveNFSTestSuite) TestUploadDownload() {
 	s.Equal(static.Pic1, data)
 }
 
+func (s *DriveNFSTestSuite) TestSetDriveNFS_BadAddr() {
+	ctx := context.Background()
+	rsp, err := s.srv.SetDriveNFS(ctx, &pb.SetDriveNFSRequest{
+		Addr: "1.2.3.4:9999:/nonexistent",
+	})
+	s.Nil(err)
+	s.Falsef(rsp.Success, "expected failure for unreachable NFS addr, got Success=true")
+	s.Contains(rsp.Message, "new nfs drive failed")
+}
+
+func (s *DriveNFSTestSuite) TestSetDriveNFS_NonExistentRoot() {
+	ctx := context.Background()
+	rsp, err := s.srv.SetDriveNFS(ctx, &pb.SetDriveNFSRequest{
+		Addr: nfsSrvUrl,
+		Root: "nonexistent",
+	})
+	s.Nil(err)
+	s.Falsef(rsp.Success, "expected failure for non-existent root, got Success=true")
+	s.Contains(rsp.Message, "set root path failed")
+}
+
 // get file content
 func (s *DriveNFSTestSuite) get(ctx context.Context, path string) ([]byte, error) {
 	if path[0] != '/' {
@@ -111,7 +132,7 @@ func (s *DriveNFSTestSuite) get(ctx context.Context, path string) ([]byte, error
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(resp.Status)
+		return nil, fmt.Errorf("%s", resp.Status)
 	}
 	return io.ReadAll(resp.Body)
 }

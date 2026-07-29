@@ -12,13 +12,14 @@ Pho - 一个用于查看和上传照片的无服务端应用
 </p>
 
 ### 安装
-[下载apk](https://github.com/fregie/pho/releases) 
 
-[Google Play](https://play.google.com/store/apps/details?id=com.fregie.pho)  
+**开源版**（仅 Android APK）：
+- [下载 APK](https://github.com/fregie/pho/releases) — 仅含 SMB / WebDAV / NFS，无 Pro 功能
 
-[App store](https://apps.apple.com/cn/app/pho-%E5%90%8C%E6%AD%A5%E7%85%A7%E7%89%87%E5%88%B0nas-%E7%BD%91%E7%9B%98/id6451428709)
+**Pro 版**（含全部功能，需付费）：
+- [App Store](https://apps.apple.com/cn/app/pho-%E5%90%8C%E6%AD%A5%E7%85%A7%E7%89%87%E5%88%B0nas-%E7%BD%91%E7%9B%98/id6451428709) — iOS 版,支持 AES 加密、并行上传、筛选器、百度网盘等
 
-> 注: Google Play和App store的版本包含专业版功能,专业版功能未开源.
+> 开源仓库仅提供 APK 下载。iOS 用户请前往 App Store 下载 Pro 版（支持免费试用基础功能后购买 Pro）。
 
 ### 介绍
 该应用的目的是替代手机上的自带相册应用,并且能够将照片同步到网络储存.  
@@ -36,11 +37,24 @@ Pho - 一个用于查看和上传照片的无服务端应用
 - [x] Samba
 - [x] Webdav
 - [x] NFS
-- [x] 百度网盘
 - [ ] 阿里网盘
 - [ ] oneDrive
 - [ ] google drive
 - [ ] google photo
+
+### 与 Pro 版本差异
+本仓库为 Pho 开源版,仅包含核心的照片查看与同步功能.以下功能仅在 Pro 版本中提供(未开源):
+
+- AES 加密上传(支持 AES-128-CFB 与 AES-256-GCM,加密视频支持 Range 播放)
+- 并行上传调优(多文件并发上传)
+- 文件筛选器(按类型/日期等条件过滤同步)
+- 目录结构配置(可选 `YYYY/MM/DD` 或 `YYYYMMDD` 组织方式)
+- 主题色自定义
+- 百度网盘支持
+
+开源版仅支持 Samba / WebDAV / NFS 三种网络储存.
+
+Pro 版在 App Store 提供: [App Store](https://apps.apple.com/cn/app/id6451428709)
 
 ### Screenshots
 <p align="left">
@@ -51,10 +65,40 @@ Pho - 一个用于查看和上传照片的无服务端应用
 - [x] 支持放大/缩小图片
 - [x] 支持上传/浏览视频
 - [x] 支持NFS
-- [x] 支持百度网盘
 - [x] 支持IOS端
 - [ ] 支持desktop端
 - [x] 支持中文
+
+### 构建
+#### 环境要求
+- Flutter: 3.41.4 (stable), Dart: 3.11.1
+- Go: 1.25 (toolchain go1.25.4)
+- JDK: 17
+- Android SDK: compileSdk 36
+- Android NDK: 用于构建嵌入式 Go 服务端 (gomobile bind)
+- protoc + 插件: protoc-gen-go@v1.27.1, protoc-gen-go-grpc@v1.1.0, protoc_plugin@21.1.2 (Dart)
+
+#### 构建步骤
+```bash
+# 1. 生成 protobuf 代码 (Go + Dart stubs)
+make prebuild      # 安装 protoc 插件
+make protobuf
+
+# 2. 构建嵌入式 Go 服务端
+make server-aar     # Android: android/app/libs/server.aar (需 gomobile)
+make server-ios     # iOS: ios/Frameworks/RUN.xcframework
+make server-linux   # Linux: linux/lib/run.so
+make server-windows # Windows: windows/lib/run.dll
+
+# 3. 构建 Flutter 应用
+make apk           # Android APK
+make ipa           # iOS IPA
+
+# 4. 运行测试 (需要 Docker 用于 SMB/WebDAV/NFS 测试容器)
+make test
+```
+
+> 注: `flutter run` 不会自动构建 `android/app/libs/server.aar`,需先执行 `make server-aar`,否则 Go 服务端无法启动.
 
 ### Contribute
 感谢各位的积极反馈

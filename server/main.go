@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"net/http"
 	_ "net/http/pprof"
@@ -36,7 +40,11 @@ func main() {
 	if *debug {
 		Debug.SetOutput(os.Stdout)
 		Debug.Printf("pprof listen at 0.0.0.0:6060")
-		go http.ListenAndServe("0.0.0.0:6060", nil)
+		go func() {
+			if err := http.ListenAndServe("0.0.0.0:6060", nil); err != nil {
+				Error.Fatalf("pprof server: %v", err)
+			}
+		}()
 	}
 	imgManager = imgmanager.NewImgManager(imgmanager.Option{})
 
@@ -46,12 +54,35 @@ func main() {
 	}
 
 	apiServer := api.NewApi(imgManager)
+	httpServer := &http.Server{
+		Addr:    *httpAddr,
+		Handler: apiServer.HttpHandler(),
+	}
 	Info.Printf("Listening http on %s", *httpAddr)
-	go http.ListenAndServe(*httpAddr, apiServer.HttpHandler())
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			Error.Fatalf("http server: %v", err)
+		}
+	}()
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterImgSyncerServer(grpcServer, apiServer)
 	reflection.Register(grpcServer)
 	Info.Printf("Listening grpc on %s", lis.Addr().String())
-	Error.Fatal(grpcServer.Serve(lis))
+
+	// Wait for interrupt signal
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		Error.Fatal(grpcServer.Serve(lis))
+	}()
+	<-quit
+	Info.Printf("Shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	grpcServer.GracefulStop()
+	if err := httpServer.Shutdown(ctx); err != nil {
+		Error.Printf("http server shutdown error: %v", err)
+	}
 }

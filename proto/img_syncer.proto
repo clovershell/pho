@@ -4,6 +4,7 @@ package img_syncer;
 option go_package = "github.com/fregie/img_syncer/proto";
 
 service ImgSyncer {
+  rpc SetDirectoryType (SetDirectoryTypeRequest) returns (SetDirectoryTypeResponse) {}
   rpc ListByDate (ListByDateRequest) returns (ListByDateResponse) {}
   rpc Delete (DeleteRequest) returns (DeleteResponse) {}
   rpc FilterNotUploaded (stream FilterNotUploadedRequest) returns (stream FilterNotUploadedResponse) {}
@@ -18,8 +19,8 @@ service ImgSyncer {
   // NFS Drive
   rpc SetDriveNFS (SetDriveNFSRequest) returns (SetDriveNFSResponse) {}
   rpc ListDriveNFSDir (ListDriveNFSDirRequest) returns (ListDriveNFSDirResponse) {}
-  rpc SetDriveBaiduNetDisk (SetDriveBaiduNetDiskRequest) returns (SetDriveBaiduNetDiskResponse) {}
-  rpc StartBaiduNetdiskLogin (StartBaiduNetdiskLoginRequest) returns (StartBaiduNetdiskLoginResponse) {}
+  // Ping
+  rpc Ping (PingRequest) returns (PingResponse) {}
 }
 
 // enum ContentType {
@@ -27,6 +28,25 @@ service ImgSyncer {
 //   IMAGE_PNG = 1;
 //   IMAGE_GIF = 2;
 // }
+
+enum DirectoryType {
+  DIRECTORY_TYPE_01 = 0; // YYYY/MM/DD/photo_name.jpg
+  DIRECTORY_TYPE_02 = 1; // YYYYMMDD/photo_name.jpg
+}
+
+message SetDirectoryTypeRequest {
+  DirectoryType directoryType = 1;
+}
+message SetDirectoryTypeResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message FileInfo {
+  string path = 1;
+  int64 size = 2;
+  bool isLivePhoto = 3;
+}
 
 message ListByDateRequest {
   string date = 1; // YYYY:MM:DD
@@ -36,7 +56,7 @@ message ListByDateRequest {
 message ListByDateResponse {
   bool success = 1;
   string message = 2;
-  repeated string paths = 3;
+  repeated FileInfo infos = 3;
 }
 
 message DeleteRequest {
@@ -61,7 +81,10 @@ message FilterNotUploadedResponse {
   bool success = 1;
   string message = 2;
   repeated string notUploaedIDs = 3;
-  bool isFinished = 4;
+  repeated string uploadedIDs = 4;
+  bool isFinished = 5;
+  repeated string invalid_ids = 6;
+  repeated string notUploadedIDs = 7;
 }
 
 message SetDriveSMBRequest {
@@ -107,6 +130,7 @@ message SetDriveWebdavRequest {
   string username = 2;
   string password = 3;
   string root = 4;
+  bool insecure = 5;
 }
 message SetDriveWebdavResponse {
   bool success = 1;
@@ -140,23 +164,9 @@ message ListDriveNFSDirResponse {
   repeated string dirs = 3;
 }
 
-message SetDriveBaiduNetDiskRequest {
-  string refreshToken = 1;
-  string accessToken = 2;
-  string tmpDir = 3;
-}
-message SetDriveBaiduNetDiskResponse {
-  bool success = 1;
-  string message = 2;
-}
+message PingRequest {}
 
-message StartBaiduNetdiskLoginRequest {
-  string tmpDir = 1;
-}
-message StartBaiduNetdiskLoginResponse {
-  bool success = 1;
-  string message = 2;
-  string refreshToken = 3;
-  string accessToken = 4;
-  int64 exiresAt = 5;
+message PingResponse {
+  int64 server_start_time = 1;
+  int64 uptime_seconds = 2;
 }

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:img_syncer/design_tokens.dart';
 import 'package:img_syncer/storageform/smbform.dart';
 import 'package:img_syncer/storageform/webdavform.dart';
 import 'package:img_syncer/storageform/nfsform.dart';
-import 'package:img_syncer/storageform/baidu_netdisk.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/state_model.dart';
 import 'package:img_syncer/global.dart';
@@ -11,7 +11,26 @@ class SettingStorageRoute extends StatefulWidget {
   const SettingStorageRoute({Key? key}) : super(key: key);
 
   @override
-  SettingStorageRouteState createState() => SettingStorageRouteState();
+  _SettingStorageRouteState createState() => _SettingStorageRouteState();
+}
+
+class _SettingStorageRouteState extends State<SettingStorageRoute> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(l10n.storageSetting),
+      ),
+      body: const SettingStorageRouteBody(),
+    );
+  }
+}
+
+class SettingStorageRouteBody extends StatefulWidget {
+  const SettingStorageRouteBody({Key? key}) : super(key: key);
+
+  @override
+  SettingStorageRouteBodyState createState() => SettingStorageRouteBodyState();
 }
 
 Drive getDrive(String drive) {
@@ -21,9 +40,7 @@ Drive getDrive(String drive) {
       .key;
 }
 
-class SettingStorageRouteState extends State<SettingStorageRoute> {
-  final GlobalKey _formKey = GlobalKey<FormState>();
-
+class SettingStorageRouteBodyState extends State<SettingStorageRouteBody> {
   @protected
   Drive currentDrive = Drive.smb;
 
@@ -53,57 +70,45 @@ class SettingStorageRouteState extends State<SettingStorageRoute> {
       case Drive.nfs:
         form = const NFSForm();
         break;
-      case Drive.baiduNetdisk:
-        form = const BaiduNetdiskForm();
-        break;
       default:
         form = const Text('Not implemented');
     }
-    return Scaffold(
-        appBar: AppBar(
-          backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
-          iconTheme: Theme.of(context).iconTheme,
-          elevation: 0,
-          title: Text(l10n.storageSetting,
-              style: Theme.of(context).textTheme.titleLarge),
-        ),
-        body: Center(
-            child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
-              child: TextField(
-                readOnly: true,
-                controller: TextEditingController(
-                    text: driveName[currentDrive] == "BaiduNetdisk"
-                        ? l10n.baiduNetdisk
-                        : driveName[currentDrive]),
-                decoration: InputDecoration(
-                    border: const OutlineInputBorder(),
-                    labelText: l10n.remoteStorageType,
-                    suffixIcon: PopupMenuButton<String>(
-                      icon: const Icon(Icons.arrow_drop_down),
-                      itemBuilder: (BuildContext context) {
-                        return driveName.values
-                            .map((String value) => PopupMenuItem<String>(
-                                  value: value,
-                                  child: Text(value == "BaiduNetdisk"
-                                      ? l10n.baiduNetdisk
-                                      : value),
-                                ))
-                            .toList();
-                      },
-                      onSelected: (String value) => setState(() {
-                        currentDrive = getDrive(value);
-                        SharedPreferences.getInstance().then((prefs) {
-                          prefs.setString("drive", value);
-                        });
-                      }),
-                    )),
-              ),
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          Container(
+            padding: EdgeInsets.symmetric(
+                horizontal: AppSpacing.paddingLarge,
+                vertical: AppSpacing.paddingSmall),
+            child: TextField(
+              readOnly: true,
+              controller: TextEditingController(
+                  text: driveName[currentDrive]),
+              decoration: InputDecoration(
+                  labelText: l10n.remoteStorageType,
+                  suffixIcon: PopupMenuButton<String>(
+                    icon: const Icon(Icons.arrow_drop_down),
+                    itemBuilder: (BuildContext context) {
+                      return driveName.values
+                          .map((String value) => PopupMenuItem<String>(
+                                value: value,
+                                child: Text(value),
+                              ))
+                          .toList();
+                    },
+                    onSelected: (String value) => setState(() {
+                      currentDrive = getDrive(value);
+                      SharedPreferences.getInstance().then((prefs) {
+                        prefs.setString("drive", value);
+                      });
+                    }),
+                  )),
             ),
-            form,
-          ],
-        )));
+          ),
+          const Divider(height: 15),
+          form,
+        ],
+      ),
+    );
   }
 }

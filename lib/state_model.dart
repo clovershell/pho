@@ -1,8 +1,10 @@
 // ignore_for_file: deprecated_member_use
+import 'dart:convert';
 import 'dart:io';
 import 'package:date_format/date_format.dart';
 import 'package:grpc/grpc.dart';
 import 'package:flutter/material.dart';
+import 'package:img_syncer/logger/logger.dart';
 import 'event_bus.dart';
 import 'package:img_syncer/asset.dart';
 import 'dart:async';
@@ -13,37 +15,69 @@ import 'package:flutter/services.dart';
 import 'package:mime/mime.dart';
 import 'package:img_syncer/proto/img_syncer.pbgrpc.dart';
 import 'package:img_syncer/global.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 SettingModel settingModel = SettingModel();
 AssetModel assetModel = AssetModel();
 StateModel stateModel = StateModel();
 
-enum Drive { smb, webDav, nfs, baiduNetdisk }
+enum Drive { smb, webDav, nfs }
 
 Map<Drive, String> driveName = {
   Drive.smb: 'SMB',
   Drive.webDav: 'WebDAV',
   Drive.nfs: 'NFS',
-  Drive.baiduNetdisk: 'BaiduNetdisk',
 };
+
+enum EncryptionType { none, aesCfb, aesGcm }
 
 class SettingModel extends ChangeNotifier {
   String localFolder = "";
   String? localFolderAbsPath;
   bool isRemoteStorageSetted = false;
 
+  bool enableEncrypt = false;
+  EncryptionType encryptionType = EncryptionType.none;
+  String encryptionPassword = "";
+
+  int galleryColumCount = 4;
+
+  bool setGalleryColumCount(int count) {
+    if (galleryColumCount == count) return false;
+    galleryColumCount = count;
+    notifyListeners();
+    return true;
+  }
+
   void setLocalFolder(String folder) {
-    if (localFolder == folder) return;
+    if (localFolder == folder && folder != "Recents") return;
     localFolder = folder;
     localFolderAbsPath = null;
-    eventBus.fire(LocalRefreshEvent());
+    stateModel.setSyncedPhotos([]);
     notifyListeners();
   }
 
   void setRemoteStorageSetted(bool setted) {
     if (isRemoteStorageSetted == setted) return;
     isRemoteStorageSetted = setted;
-    eventBus.fire(RemoteRefreshEvent());
+    notifyListeners();
+  }
+
+  void setEncryptSwitch(bool enable) {
+    if (enableEncrypt == enable) return;
+    enableEncrypt = enable;
+    notifyListeners();
+  }
+
+  void setEncryptionType(EncryptionType type) {
+    if (encryptionType == type) return;
+    encryptionType = type;
+    notifyListeners();
+  }
+
+  void setEncryptionPassword(String password) {
+    if (encryptionPassword == password) return;
+    encryptionPassword = password;
     notifyListeners();
   }
 }
@@ -56,12 +90,39 @@ class transmitState {
 class StateModel extends ChangeNotifier {
   bool _isSelectionMode = false;
   bool refreshingUnsynchronized = false;
-  List<String> notSyncedIDs = [];
+  List<String> syncedIDs = [];
+  DateTime? lastRefreshUnsyncTime;
 
   Map<String, transmitState> uploadProgress = {};
   Map<String, transmitState> downloadProgress = {};
 
   bool get isSelectionMode => _isSelectionMode;
+
+  bool needStopSync = false;
+
+  bool _isOnline = true;
+  bool get isOnline => _isOnline;
+  void setOnline(bool online) {
+    if (_isOnline == online) return;
+    _isOnline = online;
+    notifyListeners();
+  }
+
+  int syncTotal = 0;
+  int syncCompleted = 0;
+  int syncFailed = 0;
+  double get syncPercent => syncTotal == 0 ? 0 : syncCompleted / syncTotal;
+  void setSyncProgress(int total, int completed, int failed) {
+    syncTotal = total;
+    syncCompleted = completed;
+    syncFailed = failed;
+    notifyListeners();
+  }
+
+  void updateLastRefreshUnsyncTime(DateTime? t) {
+    lastRefreshUnsyncTime = t;
+    notifyListeners();
+  }
 
   void updateUploadProgress(String id, int transmitted, int total) {
     if (!uploadProgress.containsKey(id)) {
@@ -75,7 +136,8 @@ class StateModel extends ChangeNotifier {
   void finishUpload(String id, bool success) {
     uploadProgress.remove(id);
     if (success) {
-      notSyncedIDs.remove(id);
+      syncedIDs.add(id);
+      saveSyncedIDs();
     }
     notifyListeners();
   }
@@ -124,8 +186,15 @@ class StateModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setNotSyncedPhotos(List<String> ids) {
-    notSyncedIDs = ids;
+  void removeSyncedPhotos(List<String> ids) {
+    for (var id in ids) {
+      syncedIDs.remove(id);
+    }
+    notifyListeners();
+  }
+
+  void setSyncedPhotos(List<String> ids) {
+    syncedIDs = ids;
     notifyListeners();
   }
 
@@ -134,12 +203,46 @@ class StateModel extends ChangeNotifier {
     refreshingUnsynchronized = refreshing;
     notifyListeners();
   }
+
+  Future<void> saveSyncedIDs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = jsonEncode(syncedIDs);
+    await prefs.setString('synced_ids', jsonString);
+    await prefs.setInt(
+        'last_refersh_unsync', DateTime.now().millisecondsSinceEpoch);
+  }
 }
 
 class AssetModel extends ChangeNotifier {
   AssetModel() {
-    eventBus.on<LocalRefreshEvent>().listen((event) => refreshLocal());
-    eventBus.on<RemoteRefreshEvent>().listen((event) => refreshRemote());
+    eventBus
+        .on<LocalRefreshEvent>()
+        .listen((event) => refreshLocal(event.refreshUnSync));
+    eventBus
+        .on<RemoteRefreshEvent>()
+        .listen((event) => refreshRemote(event.refreshUnSync));
+    eventBus.on<FinishGettingLocal>().listen((event) async {
+      if (stateModel.lastRefreshUnsyncTime == null) {
+        refreshUnsynchronizedPhotos();
+      } else {
+        if (DateTime.now().difference(stateModel.lastRefreshUnsyncTime!) >
+                const Duration(days: 1) &&
+            stateModel.syncedIDs.isEmpty) {
+          refreshUnsynchronizedPhotos();
+        }
+      }
+    });
+    eventBus.on<FinishGettingRemote>().listen((event) async {
+      if (stateModel.lastRefreshUnsyncTime == null) {
+        refreshUnsynchronizedPhotos();
+      } else {
+        if (DateTime.now().difference(stateModel.lastRefreshUnsyncTime!) >
+                const Duration(days: 1) &&
+            stateModel.syncedIDs.isEmpty) {
+          refreshUnsynchronizedPhotos();
+        }
+      }
+    });
   }
   List<Asset> localAssets = [];
   List<Asset> remoteAssets = [];
@@ -148,42 +251,104 @@ class AssetModel extends ChangeNotifier {
   bool localHasMore = true;
   bool remoteHasMore = true;
   Completer<bool>? localGetting;
+  bool localGettingNeedBreak = false;
   Completer<bool>? remoteGetting;
+  bool remoteGettingNeedBreak = false;
+  bool refreshUnsynchronizedNeedBreak = false;
+
+  Map<String, String> titleCache = {};
+  int cacheLastSaveLen = 0;
 
   String? remoteLastError;
 
-  Future<void> refreshLocal() async {
+  void addTitleCache(String id, String title) {
+    titleCache[id] = title;
+    if (titleCache.length - cacheLastSaveLen > 50) {
+      cacheLastSaveLen = titleCache.length;
+      saveTitleCache();
+    }
+  }
+
+  Future<void> saveTitleCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = jsonEncode(titleCache);
+    prefs.setString('title_cache', jsonString);
+  }
+
+  Future<void> loadTitleCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    final jsonString = prefs.getString('title_cache');
+    if (jsonString != null) {
+      final cache = jsonDecode(jsonString);
+      for (var key in cache.keys) {
+        titleCache[key] = cache[key];
+      }
+    }
+  }
+
+  Future<void> refreshLocal(bool refreshSync) async {
+    if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+      return;
+    }
+    logger.addLog("refresh local");
     if (localGetting != null) {
+      if (localGettingNeedBreak == true) {
+        return;
+      }
+      localGettingNeedBreak = true;
       await localGetting!.future;
+    }
+    if (stateModel.refreshingUnsynchronized) {
+      refreshUnsynchronizedNeedBreak = true;
+    }
+    if (refreshSync) {
+      stateModel.setSyncedPhotos([]);
     }
     localHasMore = true;
     localAssets = [];
+    localGettingNeedBreak = false;
     notifyListeners();
-    stateModel.setNotSyncedPhotos([]);
-    await getLocalPhotos();
+    final finished = await getLocalPhotos();
+    if (finished && refreshSync) {
+      await refreshUnsynchronizedPhotos();
+    }
   }
 
-  Future<void> refreshRemote() async {
+  Future<void> refreshRemote(bool refreshSync) async {
+    logger.addLog("refresh remote");
     if (remoteGetting != null) {
+      if (remoteGettingNeedBreak == true) {
+        return;
+      }
+      remoteGettingNeedBreak = true;
       await remoteGetting!.future;
+    }
+    if (stateModel.refreshingUnsynchronized) {
+      refreshUnsynchronizedNeedBreak = true;
     }
     remoteHasMore = true;
     remoteAssets = [];
+    if (refreshSync) {
+      stateModel.setSyncedPhotos([]);
+    }
     notifyListeners();
     remoteGetting = null;
-    stateModel.setNotSyncedPhotos([]);
-    await getRemotePhotos();
+    remoteGettingNeedBreak = false;
+    final finished = await getRemotePhotos();
+    if (finished && refreshSync) {
+      await refreshUnsynchronizedPhotos();
+    }
   }
 
-  Future<void> getLocalPhotos() async {
+  Future<bool> getLocalPhotos() async {
     if (localGetting != null) {
       await localGetting?.future;
-      return;
     }
-    localGetting = Completer<bool>();
-    final offset = localAssets.length;
+    logger.addLog("get local photos");
     final re = await requestPermission();
-    if (!re) return;
+    if (!re) return false;
+    localGetting = Completer<bool>();
+    notifyListeners();
     final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
       type: RequestType.common,
       hasAll: true,
@@ -193,8 +358,9 @@ class AssetModel extends ChangeNotifier {
     if (settingModel.localFolder == "") {
       int max = 0;
       for (var path in paths) {
-        if (path.assetCount > max) {
-          max = path.assetCount;
+        final count = await path.assetCountAsync;
+        if (count > max) {
+          max = count;
           settingModel.localFolder = path.name;
         }
       }
@@ -202,8 +368,11 @@ class AssetModel extends ChangeNotifier {
 
     for (var path in paths) {
       if (settingModel.localFolder == path.name) {
+        var opt = const FilterOption(needTitle: true);
         final newpath = await path.fetchPathProperties(
             filterOptionGroup: FilterOptionGroup(
+          imageOption: opt,
+          videoOption: opt,
           orders: [
             const OrderOption(
               type: OrderOptionType.createDate,
@@ -211,68 +380,137 @@ class AssetModel extends ChangeNotifier {
             ),
           ],
         ));
-        final List<AssetEntity> entities = await newpath!
-            .getAssetListRange(start: offset, end: offset + pageSize);
-        if (entities.length < pageSize) {
-          localHasMore = false;
-        }
-        for (var i = 0; i < entities.length; i++) {
-          final asset = Asset(local: entities[i]);
-          if (settingModel.localFolderAbsPath == null) {
-            final file = await entities[i].originFile;
-            if (file != null) {
-              settingModel.localFolderAbsPath = file.parent.path;
+        int offset = 0;
+        while (localHasMore) {
+          if (localGettingNeedBreak) {
+            localGettingNeedBreak = false;
+            localGetting?.complete(true);
+            localGetting = null;
+            notifyListeners();
+            return false;
+          }
+          final List<AssetEntity> entities = await newpath!
+              .getAssetListRange(start: offset, end: offset + pageSize);
+          if (entities.length < pageSize) {
+            localHasMore = false;
+          }
+          offset += entities.length;
+          for (var i = 0; i < entities.length; i++) {
+            if (localGettingNeedBreak) {
+              localGettingNeedBreak = false;
+              localGetting?.complete(true);
+              localGetting = null;
+              notifyListeners();
+              return false;
+            }
+            final asset = Asset(local: entities[i]);
+            if (settingModel.localFolderAbsPath == null) {
+              final file = await entities[i].originFile;
+              if (file != null) {
+                settingModel.localFolderAbsPath = file.parent.path;
+              }
+            }
+            // asset.getLocalFile();
+            localAssets.add(asset);
+            // asset.thumbnailDataAsync().then((value) => notifyListeners());
+            if (i % 50 == 0) {
+              notifyListeners();
             }
           }
-          await asset.getLocalFile();
-          localAssets.add(asset);
-          // asset.thumbnailDataAsync().then((value) => notifyListeners());
-          if (i % 100 == 0) {
-            notifyListeners();
+          notifyListeners();
+          if (!localHasMore) {
+            eventBus.fire(FinishGettingLocal());
+            break;
           }
-        }
-        notifyListeners();
-        if (stateModel.notSyncedIDs.isEmpty) {
-          refreshUnsynchronizedPhotos();
         }
       }
     }
 
     localGetting?.complete(true);
     localGetting = null;
+    notifyListeners();
+    return true;
   }
 
-  Future<void> getRemotePhotos() async {
+  Future<bool> getRemotePhotos() async {
     await checkServer();
     if (remoteGetting != null) {
       await remoteGetting!.future;
-      return;
+      return false;
     }
     remoteGetting = Completer<bool>();
-    final offset = remoteAssets.length;
+    notifyListeners();
+    logger.addLog("start getting remote assets");
     try {
-      final List<RemoteImage> images =
-          await storage.listImages("", offset, pageSize);
-      if (images.length < pageSize) {
-        remoteHasMore = false;
-      }
-      for (var image in images) {
-        try {
-          final asset = Asset(remote: image);
-          remoteAssets.add(asset);
-          // asset.thumbnailDataAsync().then((value) => notifyListeners());
-        } catch (e) {
-          print(e);
+      while (remoteHasMore) {
+        if (remoteGettingNeedBreak) {
+          remoteGettingNeedBreak = false;
+          remoteGetting?.complete(true);
+          remoteGetting = null;
+          notifyListeners();
+          return false;
         }
+        final offset = remoteAssets.length;
+        final List<RemoteImage> images =
+            await storageClient.listImages("", offset, pageSize);
+        if (images.length < pageSize) {
+          remoteHasMore = false;
+        }
+        for (var i = 0; i < images.length; i++) {
+          try {
+            final asset = Asset(remote: images[i]);
+            remoteAssets.add(asset);
+            if (i % 50 == 0) {
+              notifyListeners();
+            }
+            // asset.thumbnailDataAsync().then((value) => notifyListeners());
+          } catch (e) {
+            logger.addLog(e.toString());
+          }
+        }
+        notifyListeners();
       }
-      notifyListeners();
     } catch (e) {
       remoteLastError = e.toString();
     }
-
+    if (!remoteHasMore) {
+      eventBus.fire(FinishGettingRemote());
+    }
     remoteGetting?.complete(true);
     remoteGetting = null;
+    remoteGettingNeedBreak = false;
+    notifyListeners();
+    return true;
   }
+
+  void removeLocalAsset(Asset asset) {
+    localAssets.remove(asset);
+    notifyListeners();
+  }
+
+  void removeLocalAssetsByIDs(List<String> ids) {
+    localAssets.removeWhere((element) => ids.contains(element.local!.id));
+    notifyListeners();
+  }
+
+  void removeRemoteAsset(Asset asset) {
+    remoteAssets.remove(asset);
+    notifyListeners();
+  }
+}
+
+Future<String?> findLocalIDByAsset(Asset a) async {
+  if (a.hasLocal) {
+    return a.local!.id;
+  }
+  final oName = await a.originName();
+  for (var asset in assetModel.localAssets) {
+    final name = await asset.originName();
+    if (name == oName) {
+      return asset.local!.id;
+    }
+  }
+  return null;
 }
 
 Future<void> scanFile(String filePath) async {
@@ -291,88 +529,115 @@ Future<void> scanFile(String filePath) async {
       await const MethodChannel('com.example.img_syncer/RunGrpcServer')
           .invokeMethod('scanFile', params);
     } on PlatformException catch (e) {
-      print('Failed to scan file $filePath: ${e.message}');
+      logger.addLog('Failed to scan file $filePath: ${e.message}');
     }
   }
 }
 
 Future<void> refreshUnsynchronizedPhotos() async {
+  if (assetModel.localGetting != null) {
+    await assetModel.localGetting!.future;
+  }
   await checkServer();
   if (!settingModel.isRemoteStorageSetted) {
-    stateModel.setNotSyncedPhotos([]);
+    stateModel.setSyncedPhotos([]);
     return;
   }
   final re = await requestPermission();
   if (!re) return;
+  if (stateModel.refreshingUnsynchronized) {
+    return;
+  }
+  logger.addLog("refresh unsynchronized photos");
   stateModel.setRefreshingUnsynchronized(true);
-  stateModel.setNotSyncedPhotos([]);
+  stateModel.updateLastRefreshUnsyncTime(null);
   final requests = StreamController<FilterNotUploadedRequest>();
-  final responses = storage.cli.filterNotUploaded(requests.stream);
+  final responses = storageClient.cli.filterNotUploaded(requests.stream);
+  // W7-T1: 两阶段提交 - 先积累新ID，成功后一次性替换，避免中断时丢失
+  final List<String> newSyncedIDs = [];
   await Future.wait([
     sendFilterNotUploadedRequests(requests),
-    receiveResponses(responses),
+    receiveResponses(responses, accumulatedIDs: newSyncedIDs),
   ]);
 
+  // 未被中断
+  if (!assetModel.refreshUnsynchronizedNeedBreak) {
+    // W7-T2: Set 去重后再写入
+    stateModel.setSyncedPhotos(newSyncedIDs.toSet().toList());
+    await stateModel.saveSyncedIDs();
+    stateModel.updateLastRefreshUnsyncTime(DateTime.now());
+  }
+  assetModel.refreshUnsynchronizedNeedBreak = false;
   stateModel.setRefreshingUnsynchronized(false);
 }
 
 Future<void> sendFilterNotUploadedRequests(
     StreamController<FilterNotUploadedRequest> requests) async {
-  final localFloder = settingModel.localFolder;
-  final List<AssetPathEntity> paths =
-      await PhotoManager.getAssetPathList(type: RequestType.common);
-  for (var path in paths) {
-    if (path.name == localFloder) {
-      final newpath = await path.fetchPathProperties(
-          filterOptionGroup: FilterOptionGroup(
-        orders: [
-          const OrderOption(
-            type: OrderOptionType.createDate,
-            asc: false,
-          ),
-        ],
-      ));
-      int offset = 0;
-      int pageSize = 50;
-
-      while (true) {
-        FilterNotUploadedRequest req = FilterNotUploadedRequest(
-            photos: List<FilterNotUploadedRequestInfo>.empty(growable: true));
-        final List<AssetEntity> assets = await newpath!
-            .getAssetListRange(start: offset, end: offset + pageSize);
-        if (assets.isEmpty) {
-          req.isFinished = true;
-          break;
-        }
-        var futures = <Future<FilterNotUploadedRequestInfo>>[];
-        for (var asset in assets) {
-          futures.add(_createFilterNotUploadedRequestInfo(asset));
-        }
-        req.photos.addAll(await Future.wait(futures));
-        offset += pageSize;
-        requests.add(req);
-      }
-      // final rsp = await storage.cli.filterNotUploaded(req);
-      // if (rsp.success) {
-      //   stateModel.setNotSyncedPhotos(rsp.notUploaedIDs);
-      // } else {
-      //   throw Exception("Refresh unsynchronized photos failed: ${rsp.message}");
-      // }
+  var photos = List<FilterNotUploadedRequestInfo>.empty(growable: true);
+  for (var asset in assetModel.localAssets) {
+    if (assetModel.refreshUnsynchronizedNeedBreak) {
+      await requests.close();
+      return;
     }
+    var date = asset.local!.createDateTime;
+    if (date.isBefore(DateTime(1990, 1, 1))) {
+      date = asset.local!.modifiedDateTime;
+    }
+    late String name;
+    name = await asset.name();
+    final dateStr =
+        formatDate(date, [yyyy, ':', mm, ':', dd, ' ', HH, ':', nn, ':', ss]);
+    photos.add(FilterNotUploadedRequestInfo(
+      id: asset.local!.id,
+      name: name,
+      date: dateStr,
+    ));
+    if (photos.length >= 100) {
+      requests.add(FilterNotUploadedRequest(photos: photos));
+      photos.clear();
+    }
+  }
+  if (photos.isNotEmpty) {
+    requests.add(FilterNotUploadedRequest(photos: photos));
   }
   await requests.close();
 }
 
 Future<void> receiveResponses(
-    ResponseStream<FilterNotUploadedResponse> responses) async {
+    Stream<FilterNotUploadedResponse> responses,
+    {List<String>? accumulatedIDs}) async {
   await for (var response in responses) {
     if (!response.success) {
-      print('Error: ${response.message}');
+      logger.addLog('Error: ${response.message}');
       SnackBarManager.showSnackBar("Error: ${response.message}");
       continue;
     }
-    stateModel
-        .setNotSyncedPhotos(stateModel.notSyncedIDs + response.notUploaedIDs);
+    if (accumulatedIDs != null) {
+      // W7-T1: 两阶段提交 - 仅积累，不立即写入
+      accumulatedIDs.addAll(response.uploadedIDs);
+    } else {
+      // W7-T2: Set 去重
+      final merged = {...stateModel.syncedIDs, ...response.uploadedIDs}.toList();
+      stateModel.setSyncedPhotos(merged);
+    }
+    // 使用新字段名，兼容旧字段名
+    final ids = response.notUploadedIDs.isEmpty
+        ? response.notUploaedIDs
+        : response.notUploadedIDs;
+    logger.addLog('filter: ${ids.length} not uploaded');
+  }
+}
+
+Future<void> loadUnsynchronizedPhotos() async {
+  final prefs = await SharedPreferences.getInstance();
+  final jsonString = prefs.getString('synced_ids');
+  if (jsonString != null) {
+    final cache = jsonDecode(jsonString);
+    List<String> newList = [];
+    for (var id in cache) {
+      newList.add(id);
+    }
+    stateModel.setSyncedPhotos(newList);
   }
 }
 

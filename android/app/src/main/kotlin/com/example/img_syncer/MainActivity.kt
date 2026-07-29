@@ -1,4 +1,4 @@
-package com.example.img_syncer
+package com.fregie.pho
 
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity

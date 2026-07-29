@@ -9,6 +9,7 @@ DESCRIBE := img_syncer grpc server
 prebuild:
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.27.1
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.1.0
+	dart pub global activate protoc_plugin 21.1.2
 
 protobuf:
 	protoc -I. --go_out . --go_opt paths=source_relative \
@@ -23,7 +24,8 @@ server:
 		-X '${VERSION_PACKAGE_NAME}.BuildTime=${BUILD_TIME}' \
 		-X '${VERSION_PACKAGE_NAME}.GitCommitSHA1=${GIT_COMMIT_SHA1}' \
 		-X '${VERSION_PACKAGE_NAME}.Describe=${DESCRIBE}' \
-		-X '${VERSION_PACKAGE_NAME}.Name=${BUILD_NAME}'" \
+		-X '${VERSION_PACKAGE_NAME}.Name=${BUILD_NAME}' \
+		" \
     -o server/output/${BUILD_NAME} ./server
 
 server-aar: protobuf
@@ -31,6 +33,21 @@ server-aar: protobuf
 
 server-ios: protobuf
 	CGO_ENABLED=0 gomobile bind -target=ios -ldflags "-s -w" -o ios/Frameworks/RUN.xcframework ./server/run
+
+server-linux: protobuf
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o linux/lib/run.so -buildmode=c-shared ./server/clib
+
+server-windows:
+	# CGO_ENABLED=1 GOOS=windows GOARCH=amd64 go build -o windows/lib/run.lib -buildmode=c-shared ./server/clib
+	go build -o windows/lib/run.dll -buildmode=c-shared ./server/clib
+	sed -i '/#include <complex.h>/d' windows\lib\run.h
+	sed -i '/typedef _Fcomplex GoComplex64;/d' windows\lib\run.h
+	sed -i '/typedef _Dcomplex GoComplex128;/d' windows\lib\run.h
+	dlltool -d windows/lib/run.def -l windows/lib/run.lib
+
+server-macos: protobuf
+	CGO_ENABLED=0 gomobile bind -target=macos -ldflags "-s -w" -o macos/Frameworks/RUN.xcframework ./server/run
+
 
 apk:
 	flutter build apk --release --obfuscate --split-debug-info=./debug-info
@@ -40,9 +57,8 @@ ipa:
 
 .PHONY: test
 test:
-	docker-compose -f test/docker-compose.yml up -d --build
-	sleep 3
+	docker compose -f test/docker-compose.yml up -d --build --wait
 	go test -v ./server/api -p 1 -failfast
 	go test -v ./server/drive -p 1 -failfast
-	docker-compose -f test/docker-compose.yml down
+	docker compose -f test/docker-compose.yml down
 	

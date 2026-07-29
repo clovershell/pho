@@ -5,24 +5,27 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/studio-b12/gowebdav"
 )
 
 type Webdav struct {
-	url      string
-	username string
-	password string
-	rootPath string
-	cli      *gowebdav.Client
+	url       string
+	username  string
+	password  string
+	rootPath  string
+	cli       *gowebdav.Client
+	mkdirLock sync.Mutex // serializes mkdir to avoid race in gowebdav lib
 }
 
-func NewWebdavDrive(url, username, password string) *Webdav {
+func NewWebdavDrive(url, username, password string, insecure bool) *Webdav {
 	d := &Webdav{
 		url:      url,
 		username: username,
@@ -30,9 +33,17 @@ func NewWebdavDrive(url, username, password string) *Webdav {
 		cli:      gowebdav.NewClient(url, username, password),
 	}
 	d.cli.SetTransport(&http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
 	})
+	if insecure {
+		log.Printf("WARNING: TLS certificate verification disabled for WebDAV at %s, do not use in production", url)
+	}
+	d.cli.SetTimeout(60 * time.Second)
 	return d
+}
+
+func (d *Webdav) Close() error {
+	return nil
 }
 
 func (d *Webdav) Cli() *gowebdav.Client {
@@ -74,6 +85,7 @@ func (d *Webdav) IsExist(path string) (bool, error) {
 		return false, fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, path)
+	fullPath = filepath.ToSlash(fullPath)
 	_, err := d.cli.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -94,21 +106,21 @@ func (d *Webdav) Download(path string) (io.ReadCloser, int64, error) {
 		return nil, 0, fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, path)
-	reader, err := d.cli.ReadStream(fullPath)
+	fullPath = filepath.ToSlash(fullPath)
+	reader, size, err := d.cli.ReadStreamSized(fullPath)
 	if err != nil {
 		return nil, 0, err
 	}
+	if size >= 0 {
+		return reader, size, nil
+	}
+	// extra Stat call when server omits Content-Length — gowebdav library limitation
 	info, err := d.cli.Stat(fullPath)
 	if err != nil {
+		reader.Close()
 		return nil, 0, err
 	}
 	return reader, info.Size(), nil
-	// data, err := d.cli.Read(fullPath)
-	// if err != nil {
-	// 	return nil, 0, err
-	// }
-	// reader := io.NopCloser(bytes.NewReader(data))
-	// return reader, int64(len(data)), nil
 }
 
 func (d *Webdav) Delete(path string) error {
@@ -116,6 +128,7 @@ func (d *Webdav) Delete(path string) error {
 		return fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, path)
+	fullPath = filepath.ToSlash(fullPath)
 	err := d.cli.Remove(fullPath)
 	if err != nil {
 		return err
@@ -128,15 +141,19 @@ func (d *Webdav) DownloadWithOffset(path string, offset int64) (io.ReadCloser, i
 		return nil, 0, fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, path)
-	reader, err := d.cli.ReadStreamRange(fullPath, offset, -1)
+	fullPath = filepath.ToSlash(fullPath)
+	reader, size, err := d.cli.ReadStreamRangeSized(fullPath, offset, -1)
 	if err != nil {
 		return nil, 0, err
+	}
+	if size >= 0 {
+		return reader, size, nil
 	}
 	info, err := d.cli.Stat(fullPath)
 	if err != nil {
+		reader.Close()
 		return nil, 0, err
 	}
-
 	return reader, info.Size(), nil
 }
 
@@ -149,11 +166,14 @@ func (d *Webdav) Upload(path string, reader io.ReadCloser, size int64, lastModif
 		return fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, path)
+	fullPath = filepath.ToSlash(fullPath)
+	d.mkdirLock.Lock()
 	err := d.cli.MkdirAll(filepath.Dir(fullPath), 0755)
+	d.mkdirLock.Unlock()
 	if err != nil {
 		return err
 	}
-	err = d.cli.WriteStream(fullPath, reader, 0666)
+	err = d.cli.WriteStream(fullPath, reader, size, 0666)
 	if err != nil {
 		return err
 	}
@@ -166,6 +186,7 @@ func (d *Webdav) Range(dir string, deal func(fs.FileInfo) bool) error {
 		return fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, dir)
+	fullPath = filepath.ToSlash(fullPath)
 	infos, err := d.cli.ReadDir(fullPath)
 	if err != nil {
 		return err

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +24,7 @@ type Nfs struct {
 	mount             *nfs.Mount
 	cli               *nfs.Target
 	lastConnTimestamp int64
+	connMu            sync.Mutex // 保护重连过程的序列化
 }
 
 func NewNfsDrive(url string) (*Nfs, error) {
@@ -38,14 +40,26 @@ func NewNfsDrive(url string) (*Nfs, error) {
 	if err != nil {
 		return nil, err
 	}
+	mount.SetTimeout(60 * time.Second)
 	auth := rpc.NewAuthUnix("root", 0, 0)
 	target, err := mount.Mount(d.target, auth.Auth())
 	if err != nil {
 		return nil, err
 	}
+	target.SetTimeout(60 * time.Second)
 	d.mount = mount
 	d.cli = target
 	return d, nil
+}
+
+func (d *Nfs) Close() error {
+	if d.cli != nil {
+		d.cli.Close()
+	}
+	if d.mount != nil {
+		d.mount.Close()
+	}
+	return nil
 }
 
 func (d *Nfs) Cli() *nfs.Target {
@@ -66,14 +80,26 @@ func (d *Nfs) cleanLastConnTime() {
 }
 
 func (d *Nfs) checkConn() error {
-	if time.Since(d.lastConnTime()) < 2*time.Minute {
+	// 快速 TTL 检查（无需加锁）
+	if time.Since(d.lastConnTime()) < 90*time.Second {
 		return nil
 	}
+	// FSInfo 健康探测（锁外执行，成功则刷新 TTL）
 	if d.cli != nil {
 		_, err := d.cli.FSInfo()
 		if err == nil {
+			d.updateLastConnTime()
 			return nil
 		}
+	}
+	// 需要重连，序列化执行
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	// 双重检查：可能其他 goroutine 已重连
+	if time.Since(d.lastConnTime()) < 90*time.Second {
+		return nil
+	}
+	if d.cli != nil {
 		d.cli.Close()
 	}
 	if d.mount != nil {
@@ -83,11 +109,13 @@ func (d *Nfs) checkConn() error {
 	if err != nil {
 		return err
 	}
+	mount.SetTimeout(60 * time.Second)
 	auth := rpc.NewAuthUnix("root", 0, 0)
 	target, err := mount.Mount(d.target, auth.Auth())
 	if err != nil {
 		return err
 	}
+	target.SetTimeout(60 * time.Second)
 	d.mount = mount
 	d.cli = target
 	d.updateLastConnTime()
@@ -98,17 +126,24 @@ func (d *Nfs) IsRootPathSet() bool {
 	return d.rootPath != ""
 }
 
+// normalizeRootPath returns a normalized path with leading and trailing slashes.
+// Pure string function — no I/O.
+func normalizeRootPath(path string) string {
+	path = filepath.ToSlash(path)
+	if path[0] != '/' {
+		path = "/" + path
+	}
+	if path[len(path)-1] != '/' {
+		path = path + "/"
+	}
+	return path
+}
+
 func (d *Nfs) SetRootPath(rootPath string) error {
 	if rootPath == "" {
 		return fmt.Errorf("root path is empty")
 	}
-	rootPath = filepath.ToSlash(rootPath)
-	if rootPath[0] != '/' {
-		rootPath = "/" + rootPath
-	}
-	if rootPath[len(rootPath)-1] != '/' {
-		rootPath = rootPath + "/"
-	}
+	rootPath = normalizeRootPath(rootPath)
 	_, err := d.cli.ReadDirPlus(rootPath)
 	if err != nil {
 		return err
@@ -157,13 +192,16 @@ func (d *Nfs) Download(path string) (io.ReadCloser, int64, error) {
 		d.cleanLastConnTime()
 		return nil, 0, fmt.Errorf("open file error: %v", err)
 	}
-	var length int64 = 0
-	info, _, err := d.cli.Lookup(fullPath)
-	if err != nil {
-		fmt.Printf("get file info error: %v\n", err)
-	} else {
+	length := file.FileSize()
+	if length < 0 {
+		info, _, err := d.cli.Lookup(fullPath)
+		if err != nil {
+			file.Close()
+			return nil, 0, fmt.Errorf("lookup file info error: %v", err)
+		}
 		length = int64(info.Size())
 	}
+	d.updateLastConnTime()
 	return file, length, nil
 }
 
@@ -180,20 +218,25 @@ func (d *Nfs) DownloadWithOffset(path string, offset int64) (io.ReadCloser, int6
 		d.cleanLastConnTime()
 		return nil, 0, fmt.Errorf("open file error: %v", err)
 	}
-	var length int64 = 0
-	info, _, err := d.cli.Lookup(fullPath)
-	if err != nil {
-		fmt.Printf("get file info error: %v\n", err)
-	} else {
+	length := file.FileSize()
+	if length < 0 {
+		info, _, err := d.cli.Lookup(fullPath)
+		if err != nil {
+			file.Close()
+			return nil, 0, fmt.Errorf("lookup file info error: %v", err)
+		}
 		length = int64(info.Size())
 	}
 	if length > 0 && offset >= length {
+		file.Close()
 		return nil, length, fmt.Errorf("offset is out of range")
 	}
 	_, err = file.Seek(offset, io.SeekStart)
 	if err != nil {
+		file.Close()
 		return nil, length, err
 	}
+	d.updateLastConnTime()
 	return file, length, nil
 }
 
@@ -237,12 +280,14 @@ func (d *Nfs) Upload(path string, reader io.ReadCloser, size int64, lastModified
 	}
 	f, err := d.cli.OpenFile(fullPath, 0644)
 	if err != nil {
+		d.cli.Remove(fullPath)
 		d.cleanLastConnTime()
 		return fmt.Errorf("open file error: %v", err)
 	}
-	defer f.Close()
 	_, err = io.Copy(f, reader)
+	f.Close()
 	if err != nil {
+		d.cli.Remove(fullPath)
 		return err
 	}
 	d.updateLastConnTime()
@@ -294,9 +339,16 @@ func (d *Nfs) MkdirAll(path string, perm fs.FileMode) error {
 	}
 	for i := 1; i <= len(eles); i++ {
 		dir := "/" + filepath.Join(eles[:i]...)
+		// 根目录是 NFS mount point 本身，已存在且无法 mkdir（空 filename 会触发 GARBAGE_ARGS）
+		if dir == "/" {
+			continue
+		}
 		_, err := d.cli.Mkdir(dir, perm)
 		if err != nil {
-			continue
+			if os.IsExist(err) {
+				continue
+			}
+			return fmt.Errorf("mkdir %s error: %v", dir, err)
 		}
 	}
 

@@ -1,19 +1,22 @@
-import 'dart:async';
 import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:img_syncer/asset.dart';
-import 'package:img_syncer/background_sync_route.dart';
-import 'package:img_syncer/event_bus.dart';
 import 'package:img_syncer/storage/storage.dart';
-import 'package:photo_manager/photo_manager.dart';
+import 'package:img_syncer/util.dart';
+import 'package:path/path.dart';
 import 'package:img_syncer/state_model.dart';
 import 'package:provider/provider.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:img_syncer/choose_album_route.dart';
 import 'package:img_syncer/setting_storage_route.dart';
 import 'package:img_syncer/global.dart';
-import 'package:path/path.dart';
+import 'package:img_syncer/settings_route.dart';
+import 'package:img_syncer/background_sync_route.dart';
+import 'package:img_syncer/design_tokens.dart';
+import 'package:img_syncer/widgets/thumbnail_skeleton.dart';
+import 'package:img_syncer/sync/background_runner.dart';
+
+export 'package:img_syncer/sync/background_runner.dart'
+    show shouldSyncAsset;
 
 class SyncBody extends StatefulWidget {
   const SyncBody({
@@ -33,17 +36,13 @@ class SyncBodyState extends State<SyncBody> {
 
   @protected
   int pageSize = 20;
-  List<Asset> all = [];
-  // List<Asset> toShow = [];
+  Map<String, String> uploadFailedMap = {};
   bool syncing = false;
-  bool _needStopSync = false;
-
   double scrollOffset = 0;
 
   @override
   void initState() {
     super.initState();
-    getPhotos();
     _scrollSubject.stream
         .debounceTime(const Duration(milliseconds: 150))
         .listen((scrollPosition) {
@@ -58,17 +57,11 @@ class SyncBodyState extends State<SyncBody> {
     _scrollController.addListener(() {
       _scrollSubject.add(_scrollController.position.pixels);
     });
-    // WidgetsBinding.instance.addPostFrameCallback((_) {
-    //   refreshUnsynchronized();
-    // });
   }
 
   @override
   void didUpdateWidget(SyncBody oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (all.isEmpty) {
-      getPhotos();
-    }
   }
 
   @override
@@ -78,94 +71,10 @@ class SyncBodyState extends State<SyncBody> {
     _scrollSubject.close();
   }
 
-  // bool _isLoadingMore = false;
-  // Future<void> loadMore() async {
-  //   if (_isGettingPhotos != null) {
-  //     await _isGettingPhotos!.future;
-  //   }
-  //   if (syncing) {
-  //     return;
-  //   }
-  //   if (_isLoadingMore) {
-  //     return;
-  //   }
-  //   _isLoadingMore = true;
-  //   toUpload = stateModel.notSyncedIDs.length;
-  //   Map ids = {};
-  //   for (final id in stateModel.notSyncedIDs) {
-  //     ids[id] = true;
-  //   }
-  //   int count = 0;
-  //   int originLength = toShow.length;
-  //   for (var asset in all) {
-  //     final id = asset.id;
-  //     if (ids[id] == true) {
-  //       count++;
-  //       if (count <= originLength) {
-  //         continue;
-  //       }
-  //       final a = Asset(local: asset);
-  //       await a.getLocalFile();
-  //       toShow.add(a);
-  //       if (count >= originLength + 2000) {
-  //         break;
-  //       }
-  //     }
-  //   }
-
-  //   setState(() {
-  //     _isLoadingMore = false;
-  //   });
-  // }
-
-  Completer<bool>? _isGettingPhotos = null;
-  Future<void> getPhotos() async {
-    if (_isGettingPhotos != null) {
-      await _isGettingPhotos!.future;
-      return;
-    }
-    _isGettingPhotos = Completer();
-    all.clear();
-    final re = await requestPermission();
-    if (!re) return;
-    final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
-        type: RequestType.common, hasAll: true);
-    for (var path in paths) {
-      if (path.name == settingModel.localFolder) {
-        final newpath = await path.fetchPathProperties(
-            filterOptionGroup: FilterOptionGroup(
-          orders: [
-            const OrderOption(
-              type: OrderOptionType.createDate,
-              asc: false,
-            ),
-          ],
-        ));
-        int assetOffset = 0;
-        int assetPageSize = 300;
-        while (true) {
-          final List<AssetEntity> assets = await newpath!.getAssetListRange(
-              start: assetOffset, end: assetOffset + assetPageSize);
-          if (assets.isEmpty) {
-            break;
-          }
-          for (var i = 0; i < assets.length; i++) {
-            all.add(Asset(local: assets[i]));
-          }
-          assetOffset += assetPageSize;
-        }
-        break;
-      }
-    }
-    setState(() {});
-    _isGettingPhotos!.complete(true);
-    _isGettingPhotos = null;
-  }
-
   Widget settingRows() {
     final ButtonStyle style = FilledButton.styleFrom(
         shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(15),
+      borderRadius: BorderRadius.circular(AppRadius.buttonFull),
     ));
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -176,7 +85,11 @@ class SyncBodyState extends State<SyncBody> {
                 Container(
                   height: 60,
                   width: constraints.maxWidth * 0.5,
-                  padding: const EdgeInsets.fromLTRB(15, 8, 10, 8),
+                  padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.paddingStandard,
+                      AppSpacing.sm,
+                      AppSpacing.paddingSmall,
+                      AppSpacing.sm),
                   child: FilledButton.tonal(
                     style: style,
                     onPressed: () {
@@ -191,7 +104,6 @@ class SyncBodyState extends State<SyncBody> {
                       children: [
                         const Icon(
                           Icons.folder_outlined,
-                          // color: Theme.of(context).colorScheme.secondary,
                         ),
                         const SizedBox(width: 10),
                         Text(l10n.localFolder),
@@ -202,7 +114,11 @@ class SyncBodyState extends State<SyncBody> {
                 Container(
                   height: 60,
                   width: constraints.maxWidth * 0.5,
-                  padding: const EdgeInsets.fromLTRB(10, 8, 15, 8),
+                  padding: const EdgeInsets.fromLTRB(
+                      AppSpacing.paddingSmall,
+                      AppSpacing.sm,
+                      AppSpacing.paddingStandard,
+                      AppSpacing.sm),
                   child: FilledButton.tonal(
                     style: style,
                     onPressed: () {
@@ -217,7 +133,6 @@ class SyncBodyState extends State<SyncBody> {
                       children: [
                         const Icon(
                           Icons.cloud_outlined,
-                          // color: Theme.of(context).colorScheme.secondary,
                         ),
                         const SizedBox(width: 10),
                         Text(l10n.cloudStorage),
@@ -227,38 +142,78 @@ class SyncBodyState extends State<SyncBody> {
                 ),
               ],
             ),
-            if (Platform.isAndroid)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Container(
-                    height: 60,
-                    width: constraints.maxWidth * 0.5,
-                    padding: const EdgeInsets.fromLTRB(15, 8, 10, 8),
-                    child: FilledButton.tonal(
-                      style: style,
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (context) =>
-                                  const BackgroundSyncSettingRoute()),
-                        );
-                      },
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+            (Platform.isIOS ||
+                    Platform.isAndroid ||
+                    isDebug
+                ? Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Icon(
-                            Icons.cloud_sync_outlined,
+                          if (Platform.isAndroid || Platform.isIOS)
+                            Container(
+                              height: 60,
+                              width: constraints.maxWidth * 0.5,
+                              padding: const EdgeInsets.fromLTRB(
+                                  AppSpacing.paddingStandard,
+                                  AppSpacing.sm,
+                                  AppSpacing.paddingSmall,
+                                  AppSpacing.sm),
+                              child: FilledButton.tonal(
+                                style: style,
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                        builder: (context) =>
+                                            const BackgroundSyncSettingRoute()),
+                                  );
+                                },
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(
+                                      Icons.cloud_sync_outlined,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Text(l10n.backgroundSync),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          Container(
+                            height: 60,
+                            width: constraints.maxWidth * 0.5,
+                            padding: const EdgeInsets.fromLTRB(
+                                AppSpacing.paddingSmall,
+                                AppSpacing.sm,
+                                AppSpacing.paddingStandard,
+                                AppSpacing.sm),
+                            child: FilledButton.tonal(
+                              style: FilledButton.styleFrom(
+                                  shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(
+                                    AppRadius.buttonFull),
+                              )),
+                              onPressed: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                      builder: (context) =>
+                                          const SettingsRoute()),
+                                );
+                              },
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.settings_outlined),
+                                  const SizedBox(width: 10),
+                                  Text(l10n.settings),
+                                ],
+                              ),
+                            ),
                           ),
-                          const SizedBox(width: 10),
-                          Text(l10n.backgroundSync),
                         ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+                      )
+                    : const SizedBox(height: 0, width: 0)),
           ],
         );
       },
@@ -266,53 +221,68 @@ class SyncBodyState extends State<SyncBody> {
   }
 
   void syncPhotos() async {
-    _needStopSync = false;
+    stateModel.needStopSync = false;
     if (syncing) {
       return;
     }
     setState(() {
       syncing = true;
     });
-    Map ids = {};
-    for (final id in stateModel.notSyncedIDs) {
-      ids[id] = true;
+    uploadFailedMap.clear();
+    final Map<String, bool> uploadedIds = {};
+    for (final id in stateModel.syncedIDs) {
+      uploadedIds[id] = true;
     }
-    for (var asset in all) {
-      if (_needStopSync) {
-        break;
-      }
-      final id = asset.local!.id;
-      if (ids[id] != true) {
-        continue;
-      }
-      try {
-        await storage.uploadAssetEntity(asset.local!);
-      } catch (e) {
-        print(e);
-        SnackBarManager.showSnackBar("${l10n.uploadFailed}: $e");
-        continue;
-      }
+    final all = assetModel.localAssets;
+    await keepScreenOn(true);
+    await runSyncOnce(
+      storage: storageClient,
+      assets: all,
+      uploadedIds: uploadedIds,
+      parallelCount: 1,
+      callbacks: SyncCallbacks(
+        onProgress: (completed, total, failed) {
+          if (mounted) {
+            stateModel.setSyncProgress(total, completed, failed);
+          }
+        },
+        onAssetFailed: (assetId, error) {
+          if (mounted) {
+            uploadFailedMap[assetId] = error;
+          }
+        },
+      ),
+      shouldStop: () => stateModel.needStopSync,
+    );
+    await keepScreenOn(false);
+    if (mounted) {
+      setState(() {
+        syncing = false;
+      });
     }
-    setState(() {
-      syncing = false;
-    });
-    eventBus.fire(RemoteRefreshEvent());
+    stateModel.setSyncProgress(0, 0, 0);
   }
 
   void stopSync() {
-    _needStopSync = true;
+    stateModel.needStopSync = true;
   }
 
   Widget columnBuilder(BuildContext context, StateModel model, Widget? child) {
-    Map notUploadedIds = {};
-    for (final id in stateModel.notSyncedIDs) {
-      notUploadedIds[id] = true;
+    final Map<String, bool> uploadedIds = {};
+    for (final id in stateModel.syncedIDs) {
+      uploadedIds[id] = true;
     }
+    final all = assetModel.localAssets;
     List<Widget> listChildren = [];
     double currentScrollOffset = 0;
     for (var asset in all) {
-      final id = asset.local!.id;
-      if (notUploadedIds[id] != true) {
+      // columnBuilder 为同步函数，使用 localTitle 获取扩展名；
+      // 若 localTitle 为空则扩展名为空字符串，filterTypeMap 不会匹配到空串，
+      // 等效于跳过类型过滤（与原有行为一致）。
+      final ext = asset.localTitle != null
+          ? extension(asset.localTitle!)
+          : '';
+      if (!shouldSyncAsset(asset, asset.local!.id, uploadedIds, ext)) {
         continue;
       }
       final totalHeight = MediaQuery.of(context).size.height;
@@ -321,24 +291,36 @@ class SyncBodyState extends State<SyncBody> {
           currentScrollOffset < scrollOffset + (3 * totalHeight)) {
         needLoadThumbnail = true;
         if (!asset.loadThumbnailFinished()) {
-          asset.thumbnailDataAsync().then((value) => setState(() {}));
+          asset.thumbnailDataAsync().then((value) {
+            if (mounted) setState(() {});
+          });
         }
         if (!asset.hasGotTitle()) {
-          asset.getLocalFile().then((value) => setState(() {}));
+          asset.getLocalFile().then((value) {
+            if (mounted) setState(() {});
+          });
         }
       }
       Widget child = ListTile(
         leading: SizedBox(
           width: 60,
           height: 60,
-          child: needLoadThumbnail && asset.loadThumbnailFinished()
-              ? Image(image: asset.thumbnailProvider(), fit: BoxFit.cover)
-              : Container(color: Colors.grey),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.small),
+            child: needLoadThumbnail && asset.loadThumbnailFinished()
+                ? Image(image: asset.thumbnailProvider(), fit: BoxFit.cover)
+                : ThumbnailSkeleton(width: 60, height: 60),
+          ),
         ),
-        title: Text(
-          asset.name()!,
-          overflow: TextOverflow.ellipsis,
-        ),
+        title: needLoadThumbnail
+            ? FutureBuilder(
+                future: asset.name(),
+                builder: (context, name) => Text(
+                  name.data ?? "",
+                  overflow: TextOverflow.ellipsis,
+                ),
+              )
+            : null,
         subtitle: needLoadThumbnail
             ? Consumer<StateModel>(
                 builder: (context, stateModel, child) {
@@ -349,14 +331,22 @@ class SyncBodyState extends State<SyncBody> {
                       child: LinearProgressIndicator(value: percent),
                     );
                   }
-                  if (stateModel.notSyncedIDs.contains(asset.local!.id)) {
+                  if (!stateModel.syncedIDs.contains(asset.local!.id)) {
+                    if (uploadFailedMap.containsKey(asset.local!.id)) {
+                      return Text(
+                        "${l10n.uploadFailed}: ${uploadFailedMap[asset.local!.id]}",
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.error),
+                      );
+                    }
                     return Text(l10n.notUploaded,
-                        style: const TextStyle(color: Colors.grey));
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.secondary));
                   }
                   return Text(
                     l10n.uploaded,
-                    style:
-                        const TextStyle(color: Color.fromARGB(255, 75, 154, 0)),
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.primary),
                   );
                 },
               )
@@ -367,18 +357,28 @@ class SyncBodyState extends State<SyncBody> {
     }
     return Scaffold(
       appBar: AppBar(
-        centerTitle: false,
-        title: Text(
-          l10n.cloudSync,
-          style: Theme.of(context).textTheme.headlineMedium,
+        title: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            l10n.cloudSync,
+            style: Theme.of(context).textTheme.headlineMedium,
+          ),
         ),
         actions: [
           Container(
-            padding: const EdgeInsets.fromLTRB(0, 0, 5, 5),
+            padding: const EdgeInsets.fromLTRB(0, 0, AppSpacing.xs, AppSpacing.xs),
             alignment: Alignment.bottomRight,
+            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.5),
             child: Text(
-              "${listChildren.length} ${l10n.notSync}",
-              style: const TextStyle(color: Colors.grey),
+              syncing
+                  ? "${stateModel.syncCompleted}/${stateModel.syncTotal} (${(stateModel.syncPercent * 100).toInt()}%)"
+                  : "${listChildren.length} ${l10n.notSync}",
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.end,
+              style: TextStyle(
+                  color:
+                      Theme.of(context).colorScheme.secondary.withAlpha(172)),
             ),
           ),
         ],
@@ -388,8 +388,7 @@ class SyncBodyState extends State<SyncBody> {
         children: [
           FloatingActionButton(
             heroTag: "refresh",
-            tooltip: 'Refresh unsynchronized photos',
-            // label: const Text('Refresh'),
+            tooltip: l10n.refreshUnsynchronizedPhotos,
             elevation: 2,
             onPressed: () => syncing ||
                     model.refreshingUnsynchronized ||
@@ -402,7 +401,7 @@ class SyncBodyState extends State<SyncBody> {
                 : const Icon(Icons.refresh),
           ),
           Container(
-            padding: const EdgeInsets.fromLTRB(15, 0, 0, 0),
+            padding: const EdgeInsets.only(left: AppSpacing.md),
             child: FloatingActionButton.extended(
                 heroTag: "sync",
                 elevation: 2,
@@ -436,12 +435,10 @@ class SyncBodyState extends State<SyncBody> {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.fromLTRB(15, 0, 10, 0),
+                padding: const EdgeInsets.fromLTRB(AppSpacing.md, 0, AppSpacing.sm, 0),
                 child: Text(
                   l10n.unsynchronizedPhotos,
-                  style: const TextStyle(
-                    fontSize: 13,
-                  ),
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
               const Flexible(
@@ -449,33 +446,31 @@ class SyncBodyState extends State<SyncBody> {
                   height: 10,
                   thickness: 1,
                   indent: 0,
-                  endIndent: 15,
+                  endIndent: AppSpacing.md,
                 ),
               ),
             ],
           ),
           if (!settingModel.isRemoteStorageSetted)
             Container(
-              padding: const EdgeInsets.fromLTRB(30, 0, 30, 0),
+              height: 250,
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
               child: Center(
                 heightFactor: 10,
                 child: Text(l10n.setRemoteStroage,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey,
-                    )),
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant)),
               ),
             ),
           model.refreshingUnsynchronized && listChildren.isEmpty
               ? Container(
-                  padding: const EdgeInsets.fromLTRB(30, 0, 30, 0),
+                  height: 250,
+                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
                   child: Center(
                     heightFactor: 10,
                     child: Text(l10n.refreshingPleaseWait,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey,
-                        )),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Theme.of(context).colorScheme.onSurfaceVariant)),
                   ),
                 )
               : Flexible(
@@ -490,20 +485,18 @@ class SyncBodyState extends State<SyncBody> {
 
   @override
   Widget build(BuildContext context) {
-    Provider.of<SettingModel>(context, listen: true).addListener(() {
-      getPhotos();
-    });
     return Consumer<StateModel>(
       builder: columnBuilder,
     );
   }
 
   Widget CircularProgress() {
-    return const SizedBox(
+    final cs = Theme.of(this.context).colorScheme;
+    return SizedBox(
       height: 20,
       width: 20,
       child: CircularProgressIndicator(
-        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+        valueColor: AlwaysStoppedAnimation<Color>(cs.onPrimary),
         strokeWidth: 2,
       ),
     );
@@ -511,12 +504,10 @@ class SyncBodyState extends State<SyncBody> {
 
   Future<void> refreshUnsynchronized() async {
     if (!settingModel.isRemoteStorageSetted) {
-      stateModel.setNotSyncedPhotos([]);
+      stateModel.setSyncedPhotos([]);
       return;
     }
-    await Future.wait([
-      refreshUnsynchronizedPhotos(),
-      getPhotos(),
-    ]);
+    uploadFailedMap.clear();
+    await refreshUnsynchronizedPhotos();
   }
 }

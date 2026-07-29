@@ -1,8 +1,19 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <flutter/event_channel.h>
+#include <flutter/event_sink.h>
+#include <flutter/event_stream_handler_functions.h>
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
+#include <windows.h>
+
+#include <memory>
+#include <lib/run.h>
 
 #include "flutter/generated_plugin_registrant.h"
+#include <iostream>
+#include <string>
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,11 +36,37 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+
+  // MethodChannel
+  flutter::MethodChannel<> channel(
+      flutter_controller_->engine()->messenger(), "com.example.img_syncer/RunGrpcServer",
+      &flutter::StandardMethodCodec::GetInstance());
+  channel.SetMethodCallHandler(
+      [](const flutter::MethodCall<>& call,
+         std::unique_ptr<flutter::MethodResult<>> result) {
+
+      if (call.method_name() == "RunGrpcServer") {
+        RunGrpcServer_return re = RunGrpcServer();
+        std::string str_num1 = std::to_string(re.r0);
+        std::string str_num2 = std::to_string(re.r1);
+        std::string ports = str_num1 + "," + str_num2;
+        result->Success(flutter::EncodableValue(ports));
+      } else {
+        result->NotImplemented();
+      }
+        
+      });
+
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();
   });
+
+  // Flutter can complete the first frame before the "show window" callback is
+  // registered. The following call ensures a frame is pending to ensure the
+  // window is shown. It is a no-op if the first frame hasn't completed yet.
+  flutter_controller_->ForceRedraw();
 
   return true;
 }

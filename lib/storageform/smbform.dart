@@ -5,6 +5,7 @@ import 'package:img_syncer/state_model.dart';
 import 'package:img_syncer/storage/storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/global.dart';
+import 'package:img_syncer/design_tokens.dart';
 
 class SMBForm extends StatefulWidget {
   const SMBForm({Key? key}) : super(key: key);
@@ -109,7 +110,7 @@ class _SMBFormState extends State<SMBForm> {
   Widget input(
       String label, TextEditingController? c, void Function(String?)? onSaved) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: TextFormField(
         controller: c,
         obscureText: false,
@@ -129,7 +130,7 @@ class _SMBFormState extends State<SMBForm> {
       input(l10n.username, smbUsernameController, null),
       input(l10n.password, smbPasswordController, null),
       Container(
-        padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+        padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
         child: TextFormField(
           controller: smbShareController,
           obscureText: false,
@@ -156,7 +157,7 @@ class _SMBFormState extends State<SMBForm> {
         ),
       ),
       Container(
-        padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+        padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
         child: TextFormField(
           controller: smbRootPathController,
           obscureText: false,
@@ -208,10 +209,10 @@ class _SMBFormState extends State<SMBForm> {
                 style: Theme.of(context).textTheme.titleLarge,
               ),
             ),
-            const Divider(
+            Divider(
               indent: 20,
               endIndent: 20,
-              color: Colors.grey,
+              color: Theme.of(context).colorScheme.outlineVariant,
             ),
             Expanded(
               child: ListView.builder(
@@ -235,10 +236,10 @@ class _SMBFormState extends State<SMBForm> {
             ),
             Container(
               padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
-              child: const Divider(
+              child: Divider(
                 indent: 20,
                 endIndent: 20,
-                color: Colors.grey,
+                color: Theme.of(context).colorScheme.outlineVariant,
               ),
             ),
           ],
@@ -272,10 +273,10 @@ class _SMBFormState extends State<SMBForm> {
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ),
-                const Divider(
+                Divider(
                   indent: 20,
                   endIndent: 20,
-                  color: Colors.grey,
+                  color: Theme.of(context).colorScheme.outlineVariant,
                 ),
                 FutureBuilder(
                   future: getRootPath(currentPath),
@@ -319,10 +320,10 @@ class _SMBFormState extends State<SMBForm> {
                 ),
                 Container(
                   padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
-                  child: const Divider(
+                  child: Divider(
                     indent: 20,
                     endIndent: 20,
-                    color: Colors.grey,
+                    color: Theme.of(context).colorScheme.outlineVariant,
                   ),
                 ),
                 Row(
@@ -402,7 +403,7 @@ class _SMBFormState extends State<SMBForm> {
   Widget testStorageButtun() {
     return Container(
       width: 180,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: FilledButton.tonal(
         onPressed: () {
           testStorage().then((value) {
@@ -421,7 +422,7 @@ class _SMBFormState extends State<SMBForm> {
   Widget saveButtun() {
     return Container(
       width: 150,
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+      padding: EdgeInsets.symmetric(horizontal: AppSpacing.paddingLarge, vertical: AppSpacing.paddingSmall),
       child: FilledButton(
         onPressed: testSuccess
             ? () {
@@ -435,7 +436,7 @@ class _SMBFormState extends State<SMBForm> {
                 });
                 settingModel.setRemoteStorageSetted(true);
                 assetModel.remoteLastError = null;
-                eventBus.fire(RemoteRefreshEvent());
+                eventBus.fire(RemoteRefreshEvent(refreshUnSync: true));
                 Navigator.pop(context);
               }
             : null,

@@ -2,7 +2,7 @@ package run
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -18,16 +18,18 @@ import (
 )
 
 var (
-	imgManager *imgmanager.ImgManager
+	imgManager  *imgmanager.ImgManager
+	grpcServer  *grpc.Server
+	grpcLis     net.Listener
+	httpLis     net.Listener
 )
 
 func RunGrpcServer() (string, error) {
 	imgManager = imgmanager.NewImgManager(imgmanager.Option{})
-	var grpcLis, httpLis net.Listener
 	var err error
 	var grpcPort, httpPort int
 	for start := 10000; start < 20000; start++ {
-		grpcLis, err = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", start))
+		grpcLis, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", start))
 		if err != nil {
 			Info.Printf("Listen on %d failed, try next port", start)
 			continue
@@ -42,7 +44,7 @@ func RunGrpcServer() (string, error) {
 	}
 
 	for start := 10000; start < 20000; start++ {
-		httpLis, err = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", start))
+		httpLis, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", start))
 		if err != nil {
 			Info.Printf("Listen on %d failed, try next port", start)
 			continue
@@ -58,7 +60,7 @@ func RunGrpcServer() (string, error) {
 
 	api := api.NewApi(imgManager)
 	api.SetHttpPort(httpPort)
-	grpcServer := grpc.NewServer()
+	grpcServer = grpc.NewServer()
 	pb.RegisterImgSyncerServer(grpcServer, api)
 	reflection.Register(grpcServer)
 
@@ -68,6 +70,18 @@ func RunGrpcServer() (string, error) {
 	go http.Serve(httpLis, api.HttpHandler())
 
 	return fmt.Sprintf("%d,%d", grpcPort, httpPort), nil
+}
+
+func Shutdown() {
+	if grpcServer != nil {
+		grpcServer.GracefulStop()
+	}
+	if grpcLis != nil {
+		grpcLis.Close()
+	}
+	if httpLis != nil {
+		httpLis.Close()
+	}
 }
 
 var (
@@ -82,5 +96,5 @@ var (
 func init() {
 	Info = log.New(os.Stdout, "[INFO] ", log.Ldate|log.Ltime)
 	Error = log.New(os.Stderr, "[ERROR] ", log.Ldate|log.Ltime|log.Lshortfile)
-	Debug = log.New(ioutil.Discard, "[DEBUG] ", log.Ldate|log.Ltime|log.Lshortfile)
+	Debug = log.New(io.Discard, "[DEBUG] ", log.Ldate|log.Ltime|log.Lshortfile)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"github.com/hirochachacha/go-smb2"
 )
 
+const smbConnTTL = 5 * time.Minute
+
 type Smb struct {
 	addr              string
 	username          string
@@ -25,6 +28,7 @@ type Smb struct {
 	fs                *smb2.Share
 	lastConnTimestamp int64
 	downloadLock      sync.Mutex
+	connMu            sync.Mutex
 }
 
 func NewSmbDrive(addr, username, password string) *Smb {
@@ -54,8 +58,28 @@ func (s *Smb) cleanLastConnTime() {
 }
 
 func (s *Smb) checkConn() error {
-	if time.Since(s.lastConnTime()) < 5*time.Minute {
-		return nil
+	if time.Since(s.lastConnTime()) < smbConnTTL {
+		if s.fs != nil {
+			// 轻量健康检查：对已知存在的路径做 Stat
+			checkPath := "/"
+			if s.rootPath != "" {
+				checkPath = s.rootPath
+			}
+			if _, err := s.fs.Stat(checkPath); err == nil {
+				return nil
+			}
+			// Stat 失败，连接可能已断开，继续执行下方重连
+		} else {
+			return nil
+		}
+	}
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	// 双重检查：获取锁后可能有其他 goroutine 已完成重连
+	if time.Since(s.lastConnTime()) < smbConnTTL && s.fs != nil {
+		if _, err := s.fs.Stat("/"); err == nil {
+			return nil
+		}
 	}
 	if s.fs != nil {
 		_ = s.fs.Umount()
@@ -64,10 +88,10 @@ func (s *Smb) checkConn() error {
 }
 
 func (s *Smb) Dial() (*smb2.Session, error) {
-	if s.addr == "" || s.username == "" || s.password == "" {
-		return nil, fmt.Errorf("smb config error: addr=%s, username=%s, password=%s, shareName=%s", s.addr, s.username, s.password, s.shareName)
+	if s.addr == "" || s.username == "" {
+		return nil, fmt.Errorf("smb config error: addr=%s, username=%s, password=***, shareName=%s", s.addr, s.username, s.shareName)
 	}
-	conn, err := net.Dial("tcp", s.addr)
+	conn, err := (&net.Dialer{Timeout: 30 * time.Second}).Dial("tcp", s.addr)
 	if err != nil {
 		return nil, err
 	}
@@ -169,16 +193,19 @@ func (s *Smb) Upload(path string, content io.ReadCloser, size int64, lastModifie
 		s.cleanLastConnTime()
 		return err
 	}
-	_, err = io.Copy(f, content)
-	if err != nil {
-		s.cleanLastConnTime()
-		return err
+
+	_, copyErr := io.Copy(f, content)
+	closeErr := f.Close()
+	if copyErr != nil {
+		return fmt.Errorf("copy error: %v", copyErr)
 	}
-	f.Close()
+	if closeErr != nil {
+		return fmt.Errorf("close error: %v", closeErr)
+	}
 	if !lastModified.IsZero() {
-		err = s.fs.Chtimes(fullPath, time.Now(), lastModified)
-		if err != nil {
-			return err
+		// 修改时间设置失败是非致命错误，仅记录日志
+		if err := s.fs.Chtimes(fullPath, lastModified, lastModified); err != nil {
+			log.Printf("set modification time failed (non-fatal): %v", err)
 		}
 	}
 	s.updateLastConnTime()
@@ -230,6 +257,8 @@ func (s *Smb) Download(path string) (io.ReadCloser, int64, error) {
 	return s.DownloadWithOffset(path, 0)
 }
 
+// DownloadWithOffset 从 SMB 远程文件读取指定偏移量起的内容。
+// 注意：由于 go-smb2 库不支持在同一 Share 上并发读取，下载操作通过 downloadLock 串行化。
 func (s *Smb) DownloadWithOffset(path string, offset int64) (io.ReadCloser, int64, error) {
 	s.downloadLock.Lock()
 	defer s.downloadLock.Unlock()
@@ -277,6 +306,13 @@ func (s *Smb) Delete(path string) error {
 	}
 	s.updateLastConnTime()
 
+	return nil
+}
+
+func (s *Smb) Close() error {
+	if s.fs != nil {
+		_ = s.fs.Umount()
+	}
 	return nil
 }
 
