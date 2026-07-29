@@ -18,7 +18,6 @@ Pho - A serverless application for viewing and uploading photos
 
 **Pro Edition** (all features, paid):
 - [App Store](https://apps.apple.com/cn/app/pho-%E5%90%8C%E6%AD%A5%E7%85%A7%E7%89%87%E5%88%B0nas-%E7%BD%91%E7%9B%98/id6451428709) — iOS, with AES encryption, parallel upload, filters, Baidu Netdisk, and more
-- [Google Play](https://play.google.com/store/apps/details?id=com.fregie.pho) — Android, same features as iOS
 
 > This open-source repo only provides APK downloads. iOS users should download the Pro edition from the App Store (free to try basic features, then purchase Pro).
 
