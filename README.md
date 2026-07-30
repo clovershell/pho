@@ -58,7 +58,10 @@ Pro 版在 App Store 提供: [App Store](https://apps.apple.com/cn/app/id6451428
 
 ### Screenshots
 <p align="left">
-<img src="assets/screenshot/Screenshots.png" >
+<img src="assets/screenshot/screenshot_local.png" width="220" alt="本地相册">
+<img src="assets/screenshot/screenshot_cloud.png" width="220" alt="云端相册">
+<img src="assets/screenshot/screenshot_sync.png" width="220" alt="同步页面">
+<img src="assets/screenshot/screenshot_view.png" width="220" alt="照片查看">
 </p>
 
 ### roadmap
