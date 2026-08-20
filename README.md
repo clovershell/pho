@@ -17,9 +17,10 @@ Pho - 一个用于查看和上传照片的无服务端应用
 - [下载 APK](https://github.com/fregie/pho/releases) — 仅含 SMB / WebDAV / NFS，无 Pro 功能
 
 **Pro 版**（含全部功能，需付费）：
-- [App Store](https://apps.apple.com/cn/app/pho-%E5%90%8C%E6%AD%A5%E7%85%A7%E7%89%87%E5%88%B0nas-%E7%BD%91%E7%9B%98/id6451428709) — iOS 版,支持 AES 加密、并行上传、筛选器、百度网盘等
+- [App Store](https://apps.apple.com/cn/app/pho-%E5%90%8C%E6%AD%A5%E7%85%A7%E7%89%87%E5%88%B0nas-%E7%BD%91%E7%9B%98/id6451428709) — iOS 版，支持 AES 加密、并行上传、筛选器、百度网盘等
+- [Google Play](https://play.google.com/store/apps/details?id=com.fregie.pho) — Android 版，支持 AES 加密、并行上传、筛选器、百度网盘等
 
-> 开源仓库仅提供 APK 下载。iOS 用户请前往 App Store 下载 Pro 版（支持免费试用基础功能后购买 Pro）。
+> 开源仓库仅提供 APK 下载。iOS 用户请前往 App Store、Android 用户请前往 Google Play 下载 Pro 版（支持免费试用基础功能后购买 Pro）。
 
 ### 介绍
 该应用的目的是替代手机上的自带相册应用,并且能够将照片同步到网络储存.  
@@ -54,7 +55,7 @@ Pho - 一个用于查看和上传照片的无服务端应用
 
 开源版仅支持 Samba / WebDAV / NFS 三种网络储存.
 
-Pro 版在 App Store 提供: [App Store](https://apps.apple.com/cn/app/id6451428709)
+Pro 版在 App Store 和 Google Play 提供： [App Store](https://apps.apple.com/cn/app/id6451428709) / [Google Play](https://play.google.com/store/apps/details?id=com.fregie.pho)
 
 ### Screenshots
 <p align="left">
